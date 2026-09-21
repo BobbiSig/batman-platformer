@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>DARK KNIGHT RUN</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="frame">
+    <canvas id="game" width="384" height="216"></canvas>
+
+    <div id="hud">
+      <div id="scoreBox">VILLAINS DOWN: <span id="villainCount">0</span>/<span id="villainTotal">0</span></div>
+      <div id="healthStack">
+        <div id="healthBox">
+          <span class="hudLabel batman">BATMAN</span>
+          <div id="healthBarBg"><div id="healthBarFill"></div></div>
+        </div>
+        <div id="robinHealthBox" class="hidden">
+          <span class="hudLabel robin">ROBIN</span>
+          <div id="robinHealthBarBg"><div id="robinHealthBarFill"></div></div>
+        </div>
+      </div>
+      <div id="livesBox">LIVES: <span id="livesCount">3</span></div>
+    </div>
+
+    <div id="netStatus"></div>
+
+    <div id="hint">AD/ARROWS = RUN &nbsp; SPACE = JUMP x2 &nbsp; HOLD SPACE = GLIDE &nbsp; WALL+SPACE = WALL-JUMP &nbsp; C = PUNCH &nbsp; F = BATARANG</div>
+
+    <div id="bossBar" class="hidden">
+      <div id="bossName">BANE</div>
+      <div id="bossBarBg"><div id="bossBarFill"></div></div>
+    </div>
+
+    <div id="bossHint" class="hidden">DEFEAT BANE TO ACTIVATE THE BEACON</div>
+
+    <div id="titleScreen" class="overlay">
+      <h1>DARK KNIGHT RUN</h1>
+      <p id="titleTagline">Fight through Gotham's rooftops and light the Bat-Signal.</p>
+      <p id="controlsBlock" class="small">&larr; &rarr; / A D &nbsp;to run<br>SPACE / W &nbsp;to jump &mdash; press again in the air for a <b>double jump</b><br>Hold SPACE in the air to <b>glide</b><br>Jump into a wall to <b>slide</b>, then SPACE to <b>wall-jump</b> off it<br>C &nbsp;to <b>punch</b> &nbsp;&nbsp; F / X &nbsp;to throw a <b>batarang</b><br>Henchmen only hurt you by shooting or hitting you &mdash; take them out with punches and batarangs<br>The Joker holds an arena of his own, and Bane guards the beacon itself</p>
+      <p id="coopStatus" class="small"></p>
+      <button id="startBtn">PRESS START</button>
+    </div>
+
+    <div id="winScreen" class="overlay hidden">
+      <h1>CASE CLOSED</h1>
+      <p id="winStats" class="small"></p>
+      <button id="winRestartBtn">PLAY AGAIN</button>
+    </div>
+  </div>
+  <script src="net.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>

@@ -1,0 +1,2081 @@
+// ---------------------------------------------------------------------------
+// DARK KNIGHT RUN — a tiny pixel-art platformer
+// ---------------------------------------------------------------------------
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+ctx.imageSmoothingEnabled = false;
+
+const W = canvas.width;   // 384 internal px
+const H = canvas.height;  // 216 internal px
+
+// ---------------------------------------------------------------------------
+// Physics constants
+// ---------------------------------------------------------------------------
+const GRAVITY = 620;          // px/s^2
+const GLIDE_GRAVITY = 95;     // px/s^2 while gliding
+const GLIDE_MAX_FALL = 70;    // px/s cap while gliding
+const MAX_FALL = 420;         // px/s cap normally
+const JUMP_VELOCITY = -230;   // px/s
+const DOUBLE_JUMP_VELOCITY = -205; // px/s (slightly weaker second jump)
+const MAX_JUMPS = 2;          // ground jump + one air jump
+const MOVE_SPEED = 120;       // px/s
+const GLIDE_MOVE_SPEED = 135; // px/s (a little extra air speed while gliding)
+const COYOTE_TIME = 0.1;      // s grace period after leaving a ledge
+const JUMP_BUFFER = 0.12;     // s grace period for early jump press
+const FLIP_DURATION = 0.4;    // s acrobatic flip shown on double jump
+const LAND_SQUASH_TIME = 0.08; // s squash pose on landing
+
+const WALL_SLIDE_GRAVITY = 260; // px/s^2 while sliding down a wall
+const WALL_SLIDE_MAX = 55;      // px/s cap while wall-sliding
+const WALL_JUMP_VX = 170;       // px/s kick-away speed
+const WALL_JUMP_VY = -235;      // px/s
+const WALL_JUMP_LOCK = 0.3;     // s of locked-in kick momentum after a wall jump
+const WALL_PROBE = 2;           // px, how far beyond the body we check for a wall
+
+const THROW_COOLDOWN = 0.35;  // s between batarang throws
+const THROW_ANIM_TIME = 0.15; // s throw pose duration
+const BATARANG_SPEED = 300;   // px/s
+
+const PUNCH_COOLDOWN = 0.32;  // s between punches
+const PUNCH_ACTIVE = 0.12;    // s the punch hitbox stays live
+const PUNCH_W = 11;
+const PUNCH_H = 12;
+
+const ATTACK_RANGE = 170;      // henchmen won't shoot from farther than this
+const ATTACK_MIN_RANGE = 16;   // ...or from point-blank
+const ATTACK_HEIGHT_TOL = 40;  // must be roughly the same height as the player
+const ATTACK_COOLDOWN_BASE = 1.7;
+const ATTACK_TELEGRAPH = 0.35; // brief weapon-raise warning before firing
+const BULLET_SPEED = 190;
+const COIN_SPEED = 170;
+
+const PLAYER_W = 14;
+const PLAYER_H = 20;
+
+const GORDON_SPEED = 70;          // px/s, walking into the ending shot
+const END_SEQUENCE_DURATION = 5;  // s from beacon touch to the win screen appearing
+
+const MAX_HEALTH = 100;
+const CONTACT_DAMAGE = 25;   // touching a henchman
+const BULLET_DAMAGE = 15;    // Joker gunshot
+const COIN_DAMAGE = 20;      // Two-Face's thrown coin
+const INVULN_TIME = 1.0;     // s of immunity after taking a hit
+const HIT_STUN_TIME = 0.2;   // s of locked-in knockback
+const KNOCKBACK_VX = 180;
+const KNOCKBACK_VY = -150;
+
+const PUNCH_DAMAGE = 1;
+const BATARANG_DAMAGE = 1;
+
+// ---------------------------------------------------------------------------
+// Level data
+// ---------------------------------------------------------------------------
+const platforms = [
+  { x: -50, y: 190, w: 310, h: 60 },   // P1 — start rooftop
+  { x: 330, y: 190, w: 220, h: 60 },   // P2
+  { x: 620, y: 190, w: 200, h: 60 },   // P3
+  { x: 850, y: 120, w: 150, h: 14 },   // ledge above the wall-jump shaft
+  { x: 1010, y: 190, w: 160, h: 60 },  // P4
+  { x: 1240, y: 190, w: 200, h: 60 },  // P5
+  { x: 1620, y: 205, w: 320, h: 60 },  // P6
+  { x: 2010, y: 190, w: 260, h: 60 },  // P7 — the Joker's arena
+  { x: 2340, y: 190, w: 300, h: 60 },  // P8 — Bane's arena, beacon at the far end
+];
+
+// two facing walls: jump into the gap, slide, and wall-jump between them to climb up
+const walls = [
+  { x: 850, y: 120, w: 14, h: 70 },
+  { x: 894, y: 120, w: 14, h: 70 },
+];
+
+// small floating decorative platforms
+const floaters = [
+  { x: 400, y: 128, w: 60, h: 12 },
+  { x: 1300, y: 120, w: 60, h: 12 },
+];
+
+const allSolids = platforms.concat(floaters).concat(walls);
+
+const levelWidth = 2640 + 60;
+
+const enemies = [
+  {
+    type: "joker", x: 400, y: 170, w: 15, h: 20, startX: 400,
+    minX: 350, maxX: 520, dir: 1, startDir: 1, facing: 1, alive: true,
+    attackTimer: 1.2, telegraphTimer: 0, pendingAttack: false,
+    hp: 2, maxHp: 2,
+  },
+  {
+    type: "joker", x: 1060, y: 170, w: 15, h: 20, startX: 1060,
+    minX: 1030, maxX: 1150, dir: -1, startDir: -1, facing: -1, alive: true,
+    attackTimer: 1.8, telegraphTimer: 0, pendingAttack: false,
+    hp: 2, maxHp: 2,
+  },
+  {
+    type: "twoface", x: 1690, y: 181, w: 18, h: 24, startX: 1690,
+    minX: 1650, maxX: 1900, dir: 1, startDir: 1, facing: 1, alive: true,
+    attackTimer: 2.2, telegraphTimer: 0, pendingAttack: false,
+    hp: 3, maxHp: 3,
+  },
+];
+const ENEMY_SPEED = 40;
+
+const beacon = { x: 2590, y: 130, w: 20, h: 60 };
+let beaconActive = false;
+
+// ---------------------------------------------------------------------------
+// The Joker — a mid-level boss guarding his own arena
+// ---------------------------------------------------------------------------
+const JOKER_BOSS_MAX_HP = 7;
+const JOKER_BOSS_SPEED = 45;
+const JOKER_BOSS_CONTACT_DAMAGE = 22;
+const JOKER_BOSS_SLAM_DAMAGE = 28;
+const JOKER_BOSS_SLAM_RADIUS = 16;
+const JOKER_BOSS_CARD_DAMAGE = 10;
+const JOKER_BOSS_CARD_SPEED = 220;
+const JOKER_BOSS_ATTACK_RANGE = 200;
+const JOKER_BOSS_MELEE_RANGE = 40;
+const JOKER_BOSS_ATTACK_COOLDOWN_BASE = 1.8;
+const JOKER_BOSS_TELEGRAPH = 0.4;
+const JOKER_BOSS_CARD_BURST_COUNT = 3;
+const JOKER_BOSS_CARD_BURST_GAP = 0.09;
+const JOKER_BOSS_SLAM_ACTIVE = 0.15;
+const JOKER_BOSS_ENGAGE_RANGE = 240;
+
+const jokerBoss = {
+  x: 2130, y: 164, w: 20, h: 26, startX: 2130,
+  minX: 2030, maxX: 2250, dir: 1, startDir: 1, facing: 1,
+  alive: true, hp: JOKER_BOSS_MAX_HP, maxHp: JOKER_BOSS_MAX_HP,
+  mode: "patrol", // patrol, telegraph, volley, slam, recover
+  pendingAction: null,
+  telegraphTimer: 0, attackTimer: 1.3,
+  volleyShotsLeft: 0, volleyTimer: 0,
+  slamTimer: 0, recoverTimer: 0,
+};
+let jokerBossEngaged = false;
+
+// ---------------------------------------------------------------------------
+// Bane — the final boss, guarding the arena in front of the beacon
+// ---------------------------------------------------------------------------
+const BANE_MAX_HP = 10;
+const BANE_SPEED = 30;
+const BANE_CHARGE_SPEED = 240;
+const BANE_CONTACT_DAMAGE = 25;
+const BANE_CHARGE_DAMAGE = 35;
+const BANE_DEBRIS_DAMAGE = 20;
+const BANE_DEBRIS_SPEED = 150;
+const BANE_ATTACK_RANGE = 220;
+const BANE_ATTACK_COOLDOWN_BASE = 2.2;
+const BANE_TELEGRAPH = 0.55;
+const BANE_CHARGE_MAX_TIME = 0.9;
+const BANE_RECOVER_TIME = 0.7;
+const BANE_ENGAGE_RANGE = 260;
+
+const bane = {
+  x: 2430, y: 152, w: 28, h: 38, startX: 2430,
+  minX: 2360, maxX: 2550, dir: 1, startDir: 1, facing: 1,
+  alive: true, hp: BANE_MAX_HP, maxHp: BANE_MAX_HP,
+  mode: "patrol", // patrol, telegraph, charging, recover
+  pendingAction: null,
+  telegraphTimer: 0, chargeTimer: 0, recoverTimer: 0, attackTimer: 1.5,
+  dustTimer: 0,
+};
+let bossEngaged = false;
+
+// camera settles here for the ending shot, framing the beacon
+const beaconCameraX = Math.max(0, Math.min(beacon.x - W / 2 + beacon.w / 2, levelWidth - W));
+
+// Commissioner Gordon, who walks into view once the signal is lit
+const gordon = {
+  x: beaconCameraX - 15,
+  y: beacon.y + beacon.h - 20,
+  w: 14, h: 20,
+  targetX: beacon.x - 30,
+  animTimer: 0,
+  state: "stand",
+};
+let gordonVisible = false;
+let ending = false;
+let endTimer = 0;
+
+// ---------------------------------------------------------------------------
+// Characters — Batman (always present) and Robin (drops in when a second
+// device joins over the network)
+// ---------------------------------------------------------------------------
+function makeCharacter(x, y) {
+  return {
+    x, y, w: PLAYER_W, h: PLAYER_H,
+    vx: 0, vy: 0,
+    onGround: false,
+    wasOnGround: false,
+    onWallLeft: false,
+    onWallRight: false,
+    wallJumpLockTimer: 0,
+    health: MAX_HEALTH,
+    maxHealth: MAX_HEALTH,
+    invulnTimer: 0,
+    hitStunTimer: 0,
+    punchHits: null,
+    facing: 1,
+    state: "idle", // idle, run, jump, fall, glide, wallslide
+    animTimer: 0,
+    coyoteTimer: 0,
+    jumpBufferTimer: 0,
+    jumpsUsed: 0,
+    flipTimer: 0,
+    landTimer: 0,
+    throwTimer: 0,
+    throwCooldown: 0,
+    punchTimer: 0,
+    punchCooldown: 0,
+    runDustTimer: 0,
+    checkpoint: { x, y },
+  };
+}
+
+const batman = makeCharacter(20, 150);
+const robin = makeCharacter(5, 150);
+robin.active = false; // becomes true the moment a second device joins
+
+const BATMAN_PALETTE = {
+  K: "#5b6784", KD: "#40495f", CAPE: "#2f3654", CAPE_EDGE: "#8891b8",
+  Y: "#ffd23f", SK: "#e3b98c", WH: "#fbfbff", hasEars: true,
+};
+const ROBIN_PALETTE = {
+  K: "#c0392b", KD: "#8a2620", CAPE: "#2a6b3a", CAPE_EDGE: "#6fcf7a",
+  Y: "#f2c94c", SK: "#e3b98c", WH: "#fbfbff", hasEars: false,
+};
+
+function activeCharacters() {
+  return robin.active ? [batman, robin] : [batman];
+}
+
+function nearestCharacter(x) {
+  const cs = activeCharacters();
+  let best = cs[0];
+  let bestDist = Math.abs((cs[0].x + cs[0].w / 2) - x);
+  for (let i = 1; i < cs.length; i++) {
+    const d = Math.abs((cs[i].x + cs[i].w / 2) - x);
+    if (d < bestDist) { best = cs[i]; bestDist = d; }
+  }
+  return best;
+}
+
+const particles = [];
+const projectiles = [];      // batarangs (player)
+const enemyProjectiles = []; // bullets / coins (henchmen)
+
+let villainsDefeated = 0;
+let lives = 3;
+let cameraX = 0;
+let gameWon = false;
+let gameRunning = false;
+let elapsed = 0;
+let damageFlashTimer = 0;
+
+function updateHealthUIFor(ch) {
+  const pct = Math.max(ch.health, 0) / ch.maxHealth * 100;
+  const id = ch === robin ? "robinHealthBarFill" : "healthBarFill";
+  const el = document.getElementById(id);
+  if (el) el.style.width = pct + "%";
+}
+
+document.getElementById("villainTotal").textContent = enemies.length + 2;
+
+// ---------------------------------------------------------------------------
+// Input
+// ---------------------------------------------------------------------------
+const keys = {};
+window.addEventListener("keydown", (e) => {
+  if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Space", "KeyW", "KeyA", "KeyD", "KeyF", "KeyX", "KeyC"].includes(e.code)) {
+    e.preventDefault();
+  }
+  keys[e.code] = true;
+});
+window.addEventListener("keyup", (e) => { keys[e.code] = false; });
+
+function isLeft() { return keys["ArrowLeft"] || keys["KeyA"]; }
+function isRight() { return keys["ArrowRight"] || keys["KeyD"]; }
+function isJumpHeld() { return keys["Space"] || keys["ArrowUp"] || keys["KeyW"]; }
+
+let jumpPressedEdge = false;
+let throwPressedEdge = false;
+let punchPressedEdge = false;
+window.addEventListener("keydown", (e) => {
+  if ((e.code === "Space" || e.code === "ArrowUp" || e.code === "KeyW") && !e.repeat) {
+    jumpPressedEdge = true;
+  }
+  if ((e.code === "KeyF" || e.code === "KeyX") && !e.repeat) {
+    throwPressedEdge = true;
+  }
+  if (e.code === "KeyC" && !e.repeat) {
+    punchPressedEdge = true;
+  }
+});
+
+// this device's own keypresses always control "its" character locally
+// (Batman if we're the host/offline, Robin if we're the guest); when we're
+// the guest they're also forwarded to the host instead of driving physics
+function sendInputToHost() {
+  const payload = {
+    left: isLeft(), right: isRight(), jumpHeld: isJumpHeld(),
+    jumpEdge: false, throwEdge: false, punchEdge: false,
+  };
+  if (jumpPressedEdge) { payload.jumpEdge = true; jumpPressedEdge = false; }
+  if (throwPressedEdge) { payload.throwEdge = true; throwPressedEdge = false; }
+  if (punchPressedEdge) { payload.punchEdge = true; punchPressedEdge = false; }
+  NET.sendInput(payload);
+}
+window.addEventListener("keydown", () => { if (NET.role === "guest") sendInputToHost(); });
+window.addEventListener("keyup", () => { if (NET.role === "guest") sendInputToHost(); });
+
+const localInput = {
+  isLeft: () => keys["ArrowLeft"] || keys["KeyA"],
+  isRight: () => keys["ArrowRight"] || keys["KeyD"],
+  isJumpHeld: () => keys["Space"] || keys["ArrowUp"] || keys["KeyW"],
+  consumeJumpEdge: () => { if (jumpPressedEdge) { jumpPressedEdge = false; return true; } return false; },
+  consumeThrowEdge: () => { if (throwPressedEdge) { throwPressedEdge = false; return true; } return false; },
+  consumePunchEdge: () => { if (punchPressedEdge) { punchPressedEdge = false; return true; } return false; },
+};
+
+// fed by network "input" messages from the guest; only ever read on the host
+const remoteRobinInput = {
+  left: false, right: false, jumpHeld: false,
+  jumpEdgeQueued: false, throwEdgeQueued: false, punchEdgeQueued: false,
+  isLeft() { return this.left; },
+  isRight() { return this.right; },
+  isJumpHeld() { return this.jumpHeld; },
+  consumeJumpEdge() { if (this.jumpEdgeQueued) { this.jumpEdgeQueued = false; return true; } return false; },
+  consumeThrowEdge() { if (this.throwEdgeQueued) { this.throwEdgeQueued = false; return true; } return false; },
+  consumePunchEdge() { if (this.punchEdgeQueued) { this.punchEdgeQueued = false; return true; } return false; },
+};
+
+// ---------------------------------------------------------------------------
+// Collision helpers
+// ---------------------------------------------------------------------------
+function overlap(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+function resolveCollisions(ch, dt) {
+  // horizontal
+  ch.x += ch.vx * dt;
+  for (const s of allSolids) {
+    if (!overlap(ch, s)) continue;
+    if (ch.vx > 0) ch.x = s.x - ch.w;
+    else if (ch.vx < 0) ch.x = s.x + s.w;
+    ch.vx = 0;
+  }
+  if (ch.x < 0) ch.x = 0;
+
+  // vertical
+  ch.y += ch.vy * dt;
+  ch.onGround = false;
+  for (const s of allSolids) {
+    if (!overlap(ch, s)) continue;
+    if (ch.vy > 0) {
+      ch.y = s.y - ch.h;
+      ch.vy = 0;
+      ch.onGround = true;
+      ch.checkpoint = { x: Math.max(20, s.x + 10), y: s.y - ch.h };
+    } else if (ch.vy < 0) {
+      ch.y = s.y + s.h;
+      ch.vy = 0;
+    }
+  }
+}
+
+function updateWallContacts(ch) {
+  if (ch.onGround) {
+    ch.onWallLeft = false;
+    ch.onWallRight = false;
+    return;
+  }
+  const leftProbe = { x: ch.x - WALL_PROBE, y: ch.y + 2, w: WALL_PROBE, h: ch.h - 4 };
+  const rightProbe = { x: ch.x + ch.w, y: ch.y + 2, w: WALL_PROBE, h: ch.h - 4 };
+  ch.onWallLeft = walls.some((w) => overlap(leftProbe, w));
+  ch.onWallRight = walls.some((w) => overlap(rightProbe, w));
+}
+
+function respawnCharacter(ch) {
+  ch.x = ch.checkpoint.x;
+  ch.y = ch.checkpoint.y;
+  ch.vx = 0;
+  ch.vy = 0;
+  ch.wallJumpLockTimer = 0;
+  ch.hitStunTimer = 0;
+  ch.health = ch.maxHealth;
+  ch.invulnTimer = INVULN_TIME;
+  updateHealthUIFor(ch);
+  lives--;
+  document.getElementById("livesCount").textContent = Math.max(lives, 0);
+  if (lives <= 0) {
+    lives = 3;
+    document.getElementById("livesCount").textContent = 3;
+    batman.checkpoint = { x: 20, y: 150 };
+    batman.x = 20; batman.y = 150; batman.health = batman.maxHealth;
+    updateHealthUIFor(batman);
+    if (robin.active) {
+      robin.checkpoint = { x: 5, y: 150 };
+      robin.x = 5; robin.y = 150; robin.health = robin.maxHealth;
+      updateHealthUIFor(robin);
+    }
+  }
+}
+
+// returns true if the hit actually landed (false if the character was still invulnerable)
+function takeDamage(ch, amount, knockbackDir) {
+  if (ch.invulnTimer > 0) return false;
+
+  ch.health -= amount;
+  ch.invulnTimer = INVULN_TIME;
+  damageFlashTimer = 0.15;
+  updateHealthUIFor(ch);
+  spawnDust(ch.x + ch.w / 2, ch.y + ch.h / 2, 5, 80);
+
+  if (knockbackDir) {
+    ch.vx = knockbackDir * KNOCKBACK_VX;
+    ch.vy = KNOCKBACK_VY;
+    ch.hitStunTimer = HIT_STUN_TIME;
+  }
+
+  if (ch.health <= 0) {
+    ch.health = 0;
+    updateHealthUIFor(ch);
+    respawnCharacter(ch);
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Particles, batarangs & enemy attacks
+// ---------------------------------------------------------------------------
+function spawnDust(x, y, count, spread) {
+  for (let i = 0; i < count; i++) {
+    particles.push({
+      x, y,
+      vx: (Math.random() - 0.5) * spread,
+      vy: -Math.random() * 60 - 20,
+      life: 0.35,
+      maxLife: 0.35,
+      size: 1 + Math.round(Math.random()),
+    });
+  }
+}
+
+function updateParticles(dt) {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.vy += 260 * dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.life -= dt;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+}
+
+function drawParticles() {
+  for (const p of particles) {
+    const x = Math.round(p.x - cameraX);
+    const y = Math.round(p.y);
+    ctx.globalAlpha = Math.max(p.life / p.maxLife, 0);
+    ctx.fillStyle = "#c9cbd8";
+    ctx.fillRect(x, y, p.size, p.size);
+    ctx.globalAlpha = 1;
+  }
+}
+
+function defeatEnemy(en) {
+  en.alive = false;
+  villainsDefeated++;
+  document.getElementById("villainCount").textContent = villainsDefeated;
+  spawnDust(en.x + en.w / 2, en.y + en.h / 2, 7, 100);
+}
+
+function damageEnemy(en, amount) {
+  en.hp -= amount;
+  spawnDust(en.x + en.w / 2, en.y + en.h / 2, 4, 70);
+  if (en.hp <= 0) defeatEnemy(en);
+}
+
+function throwBatarang(ch) {
+  const dir = ch.facing;
+  projectiles.push({
+    x: dir > 0 ? ch.x + ch.w : ch.x - 6,
+    y: ch.y + 8,
+    vx: dir * BATARANG_SPEED,
+    rot: 0,
+  });
+}
+
+function updateProjectiles(dt) {
+  for (let i = projectiles.length - 1; i >= 0; i--) {
+    const b = projectiles[i];
+    b.x += b.vx * dt;
+    b.rot += dt * 26;
+    const box = { x: b.x - 4, y: b.y - 4, w: 8, h: 8 };
+
+    let hit = false;
+    if (jokerBoss.alive && overlap(box, jokerBoss)) {
+      if (!jokerBossEngaged) { jokerBossEngaged = true; showBossBar("JOKER"); }
+      damageEnemy(jokerBoss, BATARANG_DAMAGE);
+      if (!jokerBoss.alive) onJokerBossDefeated();
+      hit = true;
+    }
+    if (!hit && bane.alive && overlap(box, bane)) {
+      if (!bossEngaged) { bossEngaged = true; showBossBar("BANE"); }
+      damageEnemy(bane, BATARANG_DAMAGE);
+      if (!bane.alive) onBaneDefeated();
+      hit = true;
+    }
+    for (const en of enemies) {
+      if (hit) break;
+      if (!en.alive) continue;
+      if (overlap(box, en)) {
+        damageEnemy(en, BATARANG_DAMAGE);
+        hit = true;
+        break;
+      }
+    }
+    if (!hit) {
+      for (const s of allSolids) {
+        if (overlap(box, s)) { hit = true; break; }
+      }
+    }
+
+    if (hit || b.x < cameraX - 20 || b.x > cameraX + W + 20) {
+      projectiles.splice(i, 1);
+    }
+  }
+}
+
+function drawProjectiles() {
+  for (const b of projectiles) {
+    const x = b.x - cameraX;
+    ctx.save();
+    ctx.translate(x, b.y);
+    ctx.rotate(b.rot);
+    ctx.fillStyle = "#d8d9e2";
+    ctx.fillRect(-4, -1, 8, 2);
+    ctx.fillRect(-1, -4, 2, 8);
+    ctx.fillStyle = "#8a8d9c";
+    ctx.fillRect(-1, -1, 2, 2);
+    ctx.restore();
+  }
+}
+
+function fireEnemyAttack(en) {
+  const speed = en.type === "joker" ? BULLET_SPEED : COIN_SPEED;
+  enemyProjectiles.push({
+    x: en.facing > 0 ? en.x + en.w + 2 : en.x - 2,
+    y: en.y + 8,
+    vx: en.facing * speed,
+    rot: 0,
+    type: en.type,
+  });
+}
+
+function updateEnemyProjectiles(dt) {
+  for (let i = enemyProjectiles.length - 1; i >= 0; i--) {
+    const b = enemyProjectiles[i];
+    b.x += b.vx * dt;
+    b.rot += dt * 20;
+    const box = { x: b.x - 3, y: b.y - 3, w: 6, h: 6 };
+
+    let hit = false;
+    for (const ch of activeCharacters()) {
+      if (overlap(box, ch)) {
+        const dmg = b.type === "joker" ? BULLET_DAMAGE
+          : b.type === "twoface" ? COIN_DAMAGE
+          : b.type === "card" ? JOKER_BOSS_CARD_DAMAGE
+          : BANE_DEBRIS_DAMAGE;
+        takeDamage(ch, dmg, Math.sign(b.vx) || 1);
+        hit = true;
+        break;
+      }
+    }
+    if (!hit) {
+      for (const s of allSolids) {
+        if (overlap(box, s)) { hit = true; break; }
+      }
+    }
+    if (hit || b.x < cameraX - 20 || b.x > cameraX + W + 20) {
+      enemyProjectiles.splice(i, 1);
+    }
+  }
+}
+
+function drawEnemyProjectiles() {
+  for (const b of enemyProjectiles) {
+    const x = b.x - cameraX;
+    if (b.type === "joker") {
+      ctx.fillStyle = "#fff3b0";
+      ctx.fillRect(x - 3, b.y - 1, 6, 2);
+      ctx.fillStyle = "#ffcf4a";
+      ctx.fillRect(x - 1, b.y - 1, 2, 2);
+    } else if (b.type === "twoface") {
+      ctx.save();
+      ctx.translate(x, b.y);
+      ctx.rotate(b.rot);
+      ctx.fillStyle = "#e8c34a";
+      ctx.beginPath();
+      ctx.arc(0, 0, 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#7a2a2a";
+      ctx.fillRect(-3, -1, 6, 2);
+      ctx.restore();
+    } else if (b.type === "card") {
+      // the Joker's razor playing card
+      ctx.save();
+      ctx.translate(x, b.y);
+      ctx.rotate(b.rot);
+      ctx.fillStyle = "#e6e6e6";
+      ctx.fillRect(-4, -3, 8, 6);
+      ctx.fillStyle = "#5a3a7a";
+      ctx.fillRect(-4, -3, 8, 2);
+      ctx.fillStyle = "#3c8f4a";
+      ctx.fillRect(-4, 1, 8, 2);
+      ctx.restore();
+    } else {
+      // Bane's thrown debris — a chunky spinning rock
+      ctx.save();
+      ctx.translate(x, b.y);
+      ctx.rotate(b.rot);
+      ctx.fillStyle = "#6b6055";
+      ctx.fillRect(-5, -5, 10, 10);
+      ctx.fillStyle = "#4a4038";
+      ctx.fillRect(-5, 2, 10, 3);
+      ctx.fillRect(2, -5, 3, 10);
+      ctx.restore();
+    }
+  }
+}
+
+function fireBaneDebris() {
+  enemyProjectiles.push({
+    x: bane.facing > 0 ? bane.x + bane.w + 2 : bane.x - 2,
+    y: bane.y + 14,
+    vx: bane.facing * BANE_DEBRIS_SPEED,
+    rot: 0,
+    type: "debris",
+  });
+}
+
+// generic boss-bar UI, shared by whichever boss is currently engaged
+function updateBossBarFor(boss) {
+  const pct = Math.max(boss.hp, 0) / boss.maxHp * 100;
+  document.getElementById("bossBarFill").style.width = pct + "%";
+}
+
+function showBossBar(name) {
+  document.getElementById("bossName").textContent = name;
+  document.getElementById("bossBar").classList.remove("hidden");
+}
+
+function hideBossBarSoon() {
+  setTimeout(() => {
+    const el = document.getElementById("bossBar");
+    if (el) el.classList.add("hidden");
+  }, 1200);
+}
+
+function onBaneDefeated() {
+  updateBossBarFor(bane);
+  hideBossBarSoon();
+}
+
+function onJokerBossDefeated() {
+  updateBossBarFor(jokerBoss);
+  hideBossBarSoon();
+}
+
+function fireJokerCard(en) {
+  const spreadIndex = JOKER_BOSS_CARD_BURST_COUNT - en.volleyShotsLeft;
+  const yOffset = (spreadIndex - 1) * 6;
+  enemyProjectiles.push({
+    x: en.facing > 0 ? en.x + en.w + 2 : en.x - 2,
+    y: en.y + 10 + yOffset,
+    vx: en.facing * JOKER_BOSS_CARD_SPEED,
+    rot: 0,
+    type: "card",
+  });
+}
+
+function updateJokerBoss(dt) {
+  if (!jokerBoss.alive) return;
+
+  if (jokerBoss.mode === "patrol") {
+    jokerBoss.x += jokerBoss.dir * JOKER_BOSS_SPEED * dt;
+    if (jokerBoss.x < jokerBoss.minX) { jokerBoss.x = jokerBoss.minX; jokerBoss.dir = 1; }
+    if (jokerBoss.x > jokerBoss.maxX - jokerBoss.w) { jokerBoss.x = jokerBoss.maxX - jokerBoss.w; jokerBoss.dir = -1; }
+    jokerBoss.facing = jokerBoss.dir;
+
+    jokerBoss.attackTimer -= dt;
+    const target = nearestCharacter(jokerBoss.x + jokerBoss.w / 2);
+    const dx = Math.abs((target.x + target.w / 2) - (jokerBoss.x + jokerBoss.w / 2));
+    if (jokerBoss.attackTimer <= 0 && dx < JOKER_BOSS_ATTACK_RANGE) {
+      jokerBoss.mode = "telegraph";
+      jokerBoss.telegraphTimer = JOKER_BOSS_TELEGRAPH;
+      jokerBoss.pendingAction = dx < JOKER_BOSS_MELEE_RANGE ? "slam" : (Math.random() < 0.7 ? "volley" : "slam");
+      jokerBoss.facing = target.x < jokerBoss.x ? -1 : 1;
+    }
+  } else if (jokerBoss.mode === "telegraph") {
+    jokerBoss.telegraphTimer -= dt;
+    jokerBoss.facing = nearestCharacter(jokerBoss.x + jokerBoss.w / 2).x < jokerBoss.x ? -1 : 1;
+    if (jokerBoss.telegraphTimer <= 0) {
+      if (jokerBoss.pendingAction === "volley") {
+        jokerBoss.mode = "volley";
+        jokerBoss.volleyShotsLeft = JOKER_BOSS_CARD_BURST_COUNT;
+        jokerBoss.volleyTimer = 0;
+      } else {
+        jokerBoss.mode = "slam";
+        jokerBoss.slamTimer = JOKER_BOSS_SLAM_ACTIVE;
+      }
+    }
+  } else if (jokerBoss.mode === "volley") {
+    jokerBoss.volleyTimer -= dt;
+    if (jokerBoss.volleyTimer <= 0 && jokerBoss.volleyShotsLeft > 0) {
+      fireJokerCard(jokerBoss);
+      jokerBoss.volleyShotsLeft--;
+      jokerBoss.volleyTimer = JOKER_BOSS_CARD_BURST_GAP;
+    }
+    if (jokerBoss.volleyShotsLeft <= 0 && jokerBoss.volleyTimer <= 0) {
+      jokerBoss.mode = "recover";
+      jokerBoss.recoverTimer = 0.4;
+    }
+  } else if (jokerBoss.mode === "slam") {
+    jokerBoss.slamTimer -= dt;
+    const reach = {
+      x: jokerBoss.x - JOKER_BOSS_SLAM_RADIUS, y: jokerBoss.y - 4,
+      w: jokerBoss.w + JOKER_BOSS_SLAM_RADIUS * 2, h: jokerBoss.h + 8,
+    };
+    for (const ch of activeCharacters()) {
+      if (overlap(ch, reach)) {
+        const dir = (ch.x + ch.w / 2) < (jokerBoss.x + jokerBoss.w / 2) ? -1 : 1;
+        takeDamage(ch, JOKER_BOSS_SLAM_DAMAGE, dir);
+      }
+    }
+    if (jokerBoss.slamTimer <= 0) {
+      jokerBoss.mode = "recover";
+      jokerBoss.recoverTimer = 0.5;
+    }
+  } else if (jokerBoss.mode === "recover") {
+    jokerBoss.recoverTimer -= dt;
+    if (jokerBoss.recoverTimer <= 0) {
+      jokerBoss.mode = "patrol";
+      jokerBoss.attackTimer = JOKER_BOSS_ATTACK_COOLDOWN_BASE + Math.random() * 0.7;
+    }
+  }
+
+  // regular contact damage outside of the slam window (slam has its own bigger hit above)
+  if (jokerBoss.mode !== "slam") {
+    for (const ch of activeCharacters()) {
+      if (overlap(ch, jokerBoss)) {
+        const dir = (ch.x + ch.w / 2) < (jokerBoss.x + jokerBoss.w / 2) ? -1 : 1;
+        takeDamage(ch, JOKER_BOSS_CONTACT_DAMAGE, dir);
+      }
+    }
+  }
+
+  if (!jokerBossEngaged && Math.abs(nearestCharacter(jokerBoss.x).x - jokerBoss.x) < JOKER_BOSS_ENGAGE_RANGE) {
+    jokerBossEngaged = true;
+    showBossBar("JOKER");
+  }
+  updateBossBarFor(jokerBoss);
+}
+
+function updateBane(dt) {
+  if (!bane.alive) return;
+
+  if (bane.mode === "patrol") {
+    bane.x += bane.dir * BANE_SPEED * dt;
+    if (bane.x < bane.minX) { bane.x = bane.minX; bane.dir = 1; }
+    if (bane.x > bane.maxX - bane.w) { bane.x = bane.maxX - bane.w; bane.dir = -1; }
+    bane.facing = bane.dir;
+
+    bane.attackTimer -= dt;
+    const target = nearestCharacter(bane.x + bane.w / 2);
+    const dx = Math.abs((target.x + target.w / 2) - (bane.x + bane.w / 2));
+    if (bane.attackTimer <= 0 && dx < BANE_ATTACK_RANGE) {
+      bane.mode = "telegraph";
+      bane.telegraphTimer = BANE_TELEGRAPH;
+      bane.pendingAction = Math.random() < 0.5 ? "charge" : "throw";
+      bane.facing = target.x < bane.x ? -1 : 1;
+    }
+  } else if (bane.mode === "telegraph") {
+    bane.telegraphTimer -= dt;
+    bane.facing = nearestCharacter(bane.x + bane.w / 2).x < bane.x ? -1 : 1;
+    if (bane.telegraphTimer <= 0) {
+      if (bane.pendingAction === "charge") {
+        bane.mode = "charging";
+        bane.chargeTimer = BANE_CHARGE_MAX_TIME;
+        bane.dir = bane.facing;
+      } else {
+        fireBaneDebris();
+        bane.mode = "patrol";
+        bane.attackTimer = BANE_ATTACK_COOLDOWN_BASE + Math.random() * 0.8;
+      }
+    }
+  } else if (bane.mode === "charging") {
+    bane.x += bane.dir * BANE_CHARGE_SPEED * dt;
+    bane.chargeTimer -= dt;
+    let stopped = false;
+    if (bane.x < bane.minX) { bane.x = bane.minX; stopped = true; }
+    if (bane.x > bane.maxX - bane.w) { bane.x = bane.maxX - bane.w; stopped = true; }
+
+    bane.dustTimer -= dt;
+    if (bane.dustTimer <= 0) {
+      bane.dustTimer = 0.05;
+      spawnDust(bane.x + (bane.dir > 0 ? 0 : bane.w), bane.y + bane.h - 4, 1, 40);
+    }
+
+    for (const ch of activeCharacters()) {
+      if (overlap(ch, bane)) {
+        const dir = (ch.x + ch.w / 2) < (bane.x + bane.w / 2) ? -1 : 1;
+        if (takeDamage(ch, BANE_CHARGE_DAMAGE, dir)) stopped = true;
+      }
+    }
+    if (bane.chargeTimer <= 0 || stopped) {
+      bane.mode = "recover";
+      bane.recoverTimer = BANE_RECOVER_TIME;
+    }
+  } else if (bane.mode === "recover") {
+    bane.recoverTimer -= dt;
+    if (bane.recoverTimer <= 0) {
+      bane.mode = "patrol";
+      bane.attackTimer = BANE_ATTACK_COOLDOWN_BASE + Math.random() * 0.8;
+    }
+  }
+
+  // regular contact damage outside of a charge (which has its own stronger hit above)
+  if (bane.mode !== "charging") {
+    for (const ch of activeCharacters()) {
+      if (overlap(ch, bane)) {
+        const dir = (ch.x + ch.w / 2) < (bane.x + bane.w / 2) ? -1 : 1;
+        takeDamage(ch, BANE_CONTACT_DAMAGE, dir);
+      }
+    }
+  }
+
+  if (!bossEngaged && Math.abs(nearestCharacter(bane.x).x - bane.x) < BANE_ENGAGE_RANGE) {
+    bossEngaged = true;
+    showBossBar("BANE");
+  }
+  updateBossBarFor(bane);
+}
+
+// ---------------------------------------------------------------------------
+// Update
+// ---------------------------------------------------------------------------
+function updateCharacter(ch, input, dt) {
+  // --- horizontal input (locked briefly after a wall jump or a hit so the kick/knockback carries) ---
+  const moveSpeed = ch.state === "glide" ? GLIDE_MOVE_SPEED : MOVE_SPEED;
+  if (ch.wallJumpLockTimer > 0) ch.wallJumpLockTimer -= dt;
+  if (ch.hitStunTimer > 0) ch.hitStunTimer -= dt;
+  if (ch.invulnTimer > 0) ch.invulnTimer -= dt;
+
+  if (ch.wallJumpLockTimer > 0 || ch.hitStunTimer > 0) {
+    // let the kick-off / knockback velocity carry uninterrupted
+  } else if (input.isLeft() && !input.isRight()) {
+    ch.vx = -moveSpeed;
+    ch.facing = -1;
+  } else if (input.isRight() && !input.isLeft()) {
+    ch.vx = moveSpeed;
+    ch.facing = 1;
+  } else {
+    ch.vx = 0;
+  }
+
+  // --- coyote & jump buffer ---
+  if (ch.onGround) {
+    ch.coyoteTimer = COYOTE_TIME;
+    ch.jumpsUsed = 0;
+  } else {
+    ch.coyoteTimer -= dt;
+    if (ch.onWallLeft || ch.onWallRight) ch.jumpsUsed = 0;
+  }
+
+  if (input.consumeJumpEdge()) {
+    ch.jumpBufferTimer = JUMP_BUFFER;
+  } else {
+    ch.jumpBufferTimer -= dt;
+  }
+
+  if (ch.jumpBufferTimer > 0) {
+    if (!ch.onGround && (ch.onWallLeft || ch.onWallRight)) {
+      // wall jump — kick off away from whichever wall we're touching
+      const pushDir = ch.onWallLeft ? 1 : -1;
+      ch.vx = pushDir * WALL_JUMP_VX;
+      ch.vy = WALL_JUMP_VY;
+      ch.facing = pushDir;
+      ch.wallJumpLockTimer = WALL_JUMP_LOCK;
+      ch.jumpsUsed = 1;
+      ch.jumpBufferTimer = 0;
+      ch.coyoteTimer = 0;
+      ch.onWallLeft = false;
+      ch.onWallRight = false;
+      spawnDust(ch.x + (pushDir > 0 ? 0 : ch.w), ch.y + ch.h / 2, 5, 90);
+    } else if (ch.coyoteTimer > 0) {
+      // first jump — grounded or within the coyote grace window
+      ch.vy = JUMP_VELOCITY;
+      ch.onGround = false;
+      ch.coyoteTimer = 0;
+      ch.jumpBufferTimer = 0;
+      ch.jumpsUsed = 1;
+      spawnDust(ch.x + ch.w / 2, ch.y + ch.h, 4, 60);
+    } else if (ch.jumpsUsed < MAX_JUMPS) {
+      // double jump — a mid-air acrobatic flip
+      ch.vy = DOUBLE_JUMP_VELOCITY;
+      ch.jumpsUsed++;
+      ch.jumpBufferTimer = 0;
+      ch.flipTimer = FLIP_DURATION;
+      spawnDust(ch.x + ch.w / 2, ch.y + ch.h / 2, 6, 90);
+    }
+  }
+
+  // --- throw batarang ---
+  if (ch.throwCooldown > 0) ch.throwCooldown -= dt;
+  if (ch.throwTimer > 0) ch.throwTimer -= dt;
+  if (input.consumeThrowEdge()) {
+    if (ch.throwCooldown <= 0) {
+      throwBatarang(ch);
+      ch.throwCooldown = THROW_COOLDOWN;
+      ch.throwTimer = THROW_ANIM_TIME;
+    }
+  }
+
+  // --- punch ---
+  if (ch.punchCooldown > 0) ch.punchCooldown -= dt;
+  if (ch.punchTimer > 0) {
+    ch.punchTimer -= dt;
+    const hitbox = {
+      x: ch.facing > 0 ? ch.x + ch.w : ch.x - PUNCH_W,
+      y: ch.y + 4,
+      w: PUNCH_W,
+      h: PUNCH_H,
+    };
+    for (const en of enemies) {
+      if (en.alive && !ch.punchHits.has(en) && overlap(hitbox, en)) {
+        damageEnemy(en, PUNCH_DAMAGE);
+        ch.punchHits.add(en);
+      }
+    }
+    if (jokerBoss.alive && !ch.punchHits.has(jokerBoss) && overlap(hitbox, jokerBoss)) {
+      if (!jokerBossEngaged) { jokerBossEngaged = true; showBossBar("JOKER"); }
+      damageEnemy(jokerBoss, PUNCH_DAMAGE);
+      ch.punchHits.add(jokerBoss);
+      if (!jokerBoss.alive) onJokerBossDefeated();
+    }
+    if (bane.alive && !ch.punchHits.has(bane) && overlap(hitbox, bane)) {
+      if (!bossEngaged) { bossEngaged = true; showBossBar("BANE"); }
+      damageEnemy(bane, PUNCH_DAMAGE);
+      ch.punchHits.add(bane);
+      if (!bane.alive) onBaneDefeated();
+    }
+  }
+  if (input.consumePunchEdge()) {
+    if (ch.punchCooldown <= 0) {
+      ch.punchTimer = PUNCH_ACTIVE;
+      ch.punchCooldown = PUNCH_COOLDOWN;
+      ch.punchHits = new Set();
+      spawnDust(ch.x + ch.w / 2 + ch.facing * 8, ch.y + 8, 3, 50);
+    }
+  }
+
+  // --- gravity / glide / wall-slide ---
+  const airborne = !ch.onGround;
+  const gliding = airborne && input.isJumpHeld() && ch.vy > -50;
+  const wallSliding = airborne && !gliding && ch.vy > 0 &&
+    ((ch.onWallLeft && input.isLeft()) || (ch.onWallRight && input.isRight()));
+
+  if (gliding) {
+    ch.vy += GLIDE_GRAVITY * dt;
+    if (ch.vy > GLIDE_MAX_FALL) ch.vy = GLIDE_MAX_FALL;
+  } else if (wallSliding) {
+    ch.vy += WALL_SLIDE_GRAVITY * dt;
+    if (ch.vy > WALL_SLIDE_MAX) ch.vy = WALL_SLIDE_MAX;
+  } else {
+    ch.vy += GRAVITY * dt;
+    if (ch.vy > MAX_FALL) ch.vy = MAX_FALL;
+  }
+
+  // --- collide & move ---
+  const preLandVy = ch.vy;
+  resolveCollisions(ch, dt);
+
+  // --- landing squash + dust ---
+  if (ch.onGround && !ch.wasOnGround) {
+    ch.landTimer = LAND_SQUASH_TIME;
+    if (preLandVy > 150) {
+      spawnDust(ch.x + ch.w / 2, ch.y + ch.h, 5, 70);
+    }
+  }
+  ch.wasOnGround = ch.onGround;
+  if (ch.landTimer > 0) ch.landTimer -= dt;
+  if (ch.flipTimer > 0) ch.flipTimer -= dt;
+
+  updateWallContacts(ch);
+
+  // --- state for animation ---
+  ch.animTimer += dt;
+  if (!ch.onGround) {
+    ch.state = gliding ? "glide" : wallSliding ? "wallslide" : (ch.vy < 0 ? "jump" : "fall");
+  } else {
+    ch.state = ch.vx !== 0 ? "run" : "idle";
+  }
+
+  // running dust trail
+  if (ch.state === "run") {
+    ch.runDustTimer -= dt;
+    if (ch.runDustTimer <= 0) {
+      ch.runDustTimer = 0.11;
+      spawnDust(ch.x + (ch.facing > 0 ? 2 : ch.w - 2), ch.y + ch.h, 1, 30);
+    }
+  }
+
+  // --- fell in a pit ---
+  if (ch.y > H + 40) {
+    respawnCharacter(ch);
+  }
+}
+
+function update(dt) {
+  elapsed += dt;
+
+  updateCharacter(batman, localInput, dt);
+  if (robin.active) updateCharacter(robin, remoteRobinInput, dt);
+
+  updateParticles(dt);
+  updateProjectiles(dt);
+  updateEnemyProjectiles(dt);
+
+  if (damageFlashTimer > 0) damageFlashTimer -= dt;
+
+  // --- enemies: patrol, ranged attacks, contact damage ---
+  for (const en of enemies) {
+    if (!en.alive) continue;
+
+    if (en.telegraphTimer <= 0) {
+      en.x += en.dir * ENEMY_SPEED * dt;
+      if (en.x < en.minX) { en.x = en.minX; en.dir = 1; }
+      if (en.x > en.maxX - en.w) { en.x = en.maxX - en.w; en.dir = -1; }
+      en.facing = en.dir;
+    }
+
+    en.attackTimer -= dt;
+    if (en.telegraphTimer > 0) {
+      en.telegraphTimer -= dt;
+      en.facing = nearestCharacter(en.x + en.w / 2).x < en.x ? -1 : 1;
+      if (en.telegraphTimer <= 0 && en.pendingAttack) {
+        fireEnemyAttack(en);
+        en.pendingAttack = false;
+      }
+    } else {
+      const target = nearestCharacter(en.x + en.w / 2);
+      const dx = Math.abs((target.x + target.w / 2) - (en.x + en.w / 2));
+      const dy = Math.abs(target.y - en.y);
+      if (en.attackTimer <= 0 && dx < ATTACK_RANGE && dx > ATTACK_MIN_RANGE && dy < ATTACK_HEIGHT_TOL) {
+        en.telegraphTimer = ATTACK_TELEGRAPH;
+        en.pendingAttack = true;
+        en.attackTimer = ATTACK_COOLDOWN_BASE + Math.random() * 0.6;
+      }
+    }
+
+    for (const ch of activeCharacters()) {
+      if (overlap(ch, en)) {
+        const dir = (ch.x + ch.w / 2) < (en.x + en.w / 2) ? -1 : 1;
+        takeDamage(ch, CONTACT_DAMAGE, dir);
+      }
+    }
+  }
+
+  updateJokerBoss(dt);
+  updateBane(dt);
+
+  // --- bat-signal beacon / win (locked until Bane is defeated) ---
+  const touchingBeacon = overlap(batman, beacon) || (robin.active && overlap(robin, beacon));
+  if (touchingBeacon && bane.alive) {
+    document.getElementById("bossHint").classList.remove("hidden");
+  } else {
+    document.getElementById("bossHint").classList.add("hidden");
+  }
+  if (!gameWon && touchingBeacon && !bane.alive) {
+    gameWon = true;
+    beaconActive = true;
+    ending = true;
+    endTimer = 0;
+    gordon.x = beaconCameraX - 15;
+    gordon.state = "walk";
+    gordonVisible = true;
+  }
+
+  // --- camera: centered on Batman alone, or the midpoint of both heroes ---
+  if (robin.active) {
+    const midX = (batman.x + robin.x) / 2 + PLAYER_W / 2;
+    cameraX = midX - W / 2;
+  } else {
+    cameraX = batman.x - W / 2 + batman.w / 2;
+  }
+  cameraX = Math.max(0, Math.min(cameraX, levelWidth - W));
+}
+
+// ---------------------------------------------------------------------------
+// Ending sequence — camera settles on the beacon, Gordon walks in
+// ---------------------------------------------------------------------------
+function updateEnding(dt) {
+  endTimer += dt;
+
+  cameraX += (beaconCameraX - cameraX) * Math.min(dt * 3, 1);
+
+  if (gordon.x < gordon.targetX) {
+    gordon.x = Math.min(gordon.x + GORDON_SPEED * dt, gordon.targetX);
+    gordon.animTimer += dt;
+    gordon.state = "walk";
+  } else {
+    gordon.state = "stand";
+  }
+
+  if (ending && endTimer > END_SEQUENCE_DURATION) {
+    ending = false;
+    winGame();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Drawing
+// ---------------------------------------------------------------------------
+function drawBackground() {
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, "#1c2550");
+  grad.addColorStop(1, "#4a4270");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // moon
+  const moonX = 300 - cameraX * 0.05;
+  ctx.fillStyle = "#e9e3c9";
+  ctx.beginPath();
+  ctx.arc(((moonX % (W + 100)) + W + 100) % (W + 100) - 50, 40, 18, 0, Math.PI * 2);
+  ctx.fill();
+
+  // stars
+  ctx.fillStyle = "#cfd2e0";
+  for (let i = 0; i < 40; i++) {
+    const sx = (i * 97 - cameraX * 0.1) % (W + 40);
+    const sy = (i * 53) % 90;
+    ctx.fillRect(((sx % (W + 40)) + (W + 40)) % (W + 40), sy, 1, 1);
+  }
+
+  // far buildings (parallax 0.3)
+  ctx.fillStyle = "#171233";
+  drawSkyline(0.3, 90, 60, 5417);
+  // near buildings (parallax 0.55)
+  ctx.fillStyle = "#100c24";
+  drawSkyline(0.55, 130, 45, 9931);
+}
+
+function drawSkyline(parallax, baseY, variance, seed) {
+  const offset = cameraX * parallax;
+  const buildingW = 34;
+  const start = Math.floor(offset / buildingW) - 1;
+  const count = Math.ceil(W / buildingW) + 2;
+  for (let i = start; i < start + count; i++) {
+    const h = variance + ((Math.abs(Math.sin(i * 12.9898 + seed)) * 10000) % variance);
+    const bx = i * buildingW - offset;
+    ctx.fillRect(bx, H - baseY - h + 60, buildingW - 4, h + 60);
+  }
+}
+
+function drawGround() {
+  for (const p of platforms.concat(floaters)) {
+    const x = p.x - cameraX;
+    if (x + p.w < 0 || x > W) continue;
+    ctx.fillStyle = "#2c2244";
+    ctx.fillRect(x, p.y, p.w, p.h);
+    ctx.fillStyle = "#3a2c5a";
+    ctx.fillRect(x, p.y, p.w, 4);
+    // gargoyle-ish crenellations on rooftops
+    ctx.fillStyle = "#1c1530";
+    for (let gx = 4; gx < p.w - 4; gx += 16) {
+      ctx.fillRect(x + gx, p.y - 4, 6, 4);
+    }
+  }
+
+  // wall-jump shaft walls
+  for (const w of walls) {
+    const x = w.x - cameraX;
+    if (x + w.w < 0 || x > W) continue;
+    ctx.fillStyle = "#332a4d";
+    ctx.fillRect(x, w.y, w.w, w.h);
+    ctx.fillStyle = "#463a68";
+    ctx.fillRect(x, w.y, 2, w.h);
+    ctx.fillStyle = "#221a38";
+    for (let gy = w.y + 6; gy < w.y + w.h - 4; gy += 10) {
+      ctx.fillRect(x + 2, gy, w.w - 4, 3);
+    }
+  }
+}
+
+// the classic bat emblem: pointed ears, swept wings, scalloped wingtips
+function drawBatSymbol(bx, by, s) {
+  const pts = [
+    [0, -9], [2.5, -11], [4, -7], [7, -4],
+    [23, -10], [13, 3], [19, 11], [6, 6], [3, 13],
+    [0, 8],
+    [-3, 13], [-6, 6], [-19, 11], [-13, 3], [-23, -10],
+    [-7, -4], [-4, -7], [-2.5, -11],
+  ];
+  ctx.beginPath();
+  pts.forEach(([px, py], i) => {
+    const X = bx + px * s, Y = by + py * s;
+    if (i === 0) ctx.moveTo(X, Y); else ctx.lineTo(X, Y);
+  });
+  ctx.closePath();
+  ctx.fill();
+}
+
+function beaconIntensity() {
+  if (!beaconActive) return 0;
+  // a quick flicker-on, then steady
+  const t = endTimer;
+  if (t < 0.1) return 0.2;
+  if (t < 0.16) return 0.9;
+  if (t < 0.24) return 0.15;
+  if (t < 0.32) return 1;
+  if (t < 0.4) return 0.35;
+  return 1;
+}
+
+function drawBeacon() {
+  const x = beacon.x - cameraX;
+  if (x < -60 || x > W + 60) return;
+
+  // pedestal
+  ctx.fillStyle = "#23242b";
+  ctx.fillRect(x + 4, beacon.y + 30, 10, beacon.h - 30);
+  ctx.fillRect(x, beacon.y + 26, 18, 6);
+
+  // dish housing
+  ctx.fillStyle = "#33343d";
+  ctx.beginPath();
+  ctx.arc(x + 9, beacon.y + 22, 11, Math.PI, Math.PI * 2);
+  ctx.fill();
+
+  const glow = beaconIntensity();
+
+  // lens base (dark disc, glow overlaid on top when lit)
+  ctx.fillStyle = "#4a4c56";
+  ctx.beginPath();
+  ctx.arc(x + 9, beacon.y + 22, 7, Math.PI, Math.PI * 2);
+  ctx.fill();
+  if (glow > 0) {
+    ctx.save();
+    ctx.globalAlpha = glow;
+    ctx.fillStyle = "#fff3b0";
+    ctx.beginPath();
+    ctx.arc(x + 9, beacon.y + 22, 7, Math.PI, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  if (glow > 0) {
+    ctx.save();
+    ctx.globalAlpha = glow;
+
+    // beam — kept entirely on-screen so the signal reads clearly in the sky
+    const beamTopY = 16;
+    const grad = ctx.createLinearGradient(0, beacon.y + 16, 0, beamTopY);
+    grad.addColorStop(0, "rgba(255,243,176,0.5)");
+    grad.addColorStop(1, "rgba(255,243,176,0.08)");
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(x + 2, beacon.y + 18);
+    ctx.lineTo(x - 36, beamTopY);
+    ctx.lineTo(x + 54, beamTopY);
+    ctx.lineTo(x + 16, beacon.y + 18);
+    ctx.closePath();
+    ctx.fill();
+
+    // the real bat-signal, high in the beam but fully visible
+    ctx.fillStyle = "rgba(15,12,10,0.88)";
+    drawBatSymbol(x + 9, 52, 1.15);
+    ctx.restore();
+  }
+}
+
+function drawGordon() {
+  const x = gordon.x - cameraX;
+  if (x < -20 || x > W + 20) return;
+  const frame = Math.floor(gordon.animTimer * 6) % 2;
+  const walking = gordon.state === "walk";
+
+  ctx.save();
+  ctx.translate(Math.round(x), Math.round(gordon.y));
+
+  // legs
+  ctx.fillStyle = "#2e2b26";
+  if (walking && frame === 0) { ctx.fillRect(3, 14, 4, 6); ctx.fillRect(8, 13, 4, 7); }
+  else if (walking) { ctx.fillRect(3, 13, 4, 7); ctx.fillRect(8, 14, 4, 6); }
+  else { ctx.fillRect(3, 14, 4, 6); ctx.fillRect(8, 14, 4, 6); }
+
+  // trenchcoat torso
+  ctx.fillStyle = "#8a7355";
+  ctx.fillRect(1, 6, 12, 9);
+  ctx.fillStyle = "#6f5b42";
+  ctx.fillRect(1, 6, 12, 2);
+  ctx.fillStyle = "#4a3f30";
+  ctx.fillRect(6, 7, 2, 8);
+
+  // arms
+  ctx.fillStyle = "#8a7355";
+  if (walking) {
+    const sway = frame === 0 ? -1 : 1;
+    ctx.fillRect(0, 8 + sway, 3, 6);
+    ctx.fillRect(11, 8 - sway, 3, 6);
+  } else {
+    ctx.fillRect(0, 8, 3, 6);
+    ctx.fillRect(11, 8, 3, 6);
+  }
+
+  // head
+  ctx.fillStyle = "#dba876";
+  ctx.fillRect(2, 0, 10, 7);
+  // grey hair
+  ctx.fillStyle = "#c9c9c9";
+  ctx.fillRect(2, -2, 10, 3);
+  ctx.fillRect(1, 0, 2, 4);
+  ctx.fillRect(11, 0, 2, 4);
+  // mustache
+  ctx.fillStyle = "#b6b6b6";
+  ctx.fillRect(4, 4, 6, 1);
+  // glasses
+  ctx.fillStyle = "#2a2a2a";
+  ctx.fillRect(3, 2, 3, 2);
+  ctx.fillRect(8, 2, 3, 2);
+  ctx.fillRect(6, 2, 2, 1);
+
+  ctx.restore();
+}
+
+function drawHealthPips(width, hp, maxHp, yOff) {
+  const pipW = 4, gap = 1;
+  const totalW = maxHp * pipW + (maxHp - 1) * gap;
+  const startX = width / 2 - totalW / 2;
+  for (let i = 0; i < maxHp; i++) {
+    const px = startX + i * (pipW + gap);
+    ctx.fillStyle = i < hp ? "#e0413d" : "#2a2530";
+    ctx.fillRect(px, yOff, pipW, 3);
+  }
+}
+
+function drawHenchman(en) {
+  const x = en.x - cameraX;
+  if (x < -30 || x > W + 30) return;
+  const bob = Math.round(Math.sin(elapsed * 3 + en.x) * 1);
+  const aiming = en.telegraphTimer > 0;
+
+  ctx.save();
+  ctx.translate(Math.round(x + en.w / 2), Math.round(en.y + bob));
+  ctx.scale(en.facing, 1);
+  ctx.translate(-en.w / 2, 0);
+
+  drawHealthPips(en.w, en.hp, en.maxHp, -9);
+
+  if (en.type === "joker") {
+    ctx.fillStyle = "#2c2233";
+    ctx.fillRect(2, en.h - 6, 4, 6);
+    ctx.fillRect(en.w - 6, en.h - 6, 4, 6);
+
+    ctx.fillStyle = "#5a3a7a";
+    ctx.fillRect(1, 7, en.w - 2, en.h - 13);
+    ctx.fillStyle = "#3c8f4a";
+    ctx.fillRect(en.w / 2 - 1, 8, 2, en.h - 15);
+
+    ctx.fillStyle = "#5a3a7a";
+    ctx.fillRect(-1, 9, 4, 6);
+    if (aiming) {
+      ctx.fillRect(en.w - 2, 4, 7, 3);
+      ctx.fillStyle = "#fff3b0";
+      ctx.fillRect(en.w + 4, 3, 2, 2);
+    } else {
+      ctx.fillRect(en.w - 3, 9, 4, 6);
+    }
+
+    ctx.fillStyle = "#f0e6d8";
+    ctx.fillRect(2, 0, en.w - 4, 7);
+    ctx.fillStyle = "#5fbf4a";
+    ctx.fillRect(1, -3, 3, 4);
+    ctx.fillRect(en.w - 4, -3, 3, 4);
+    ctx.fillRect(en.w / 2 - 2, -4, 4, 4);
+    ctx.fillStyle = "#c0392b";
+    ctx.fillRect(3, 4, en.w - 6, 1);
+    ctx.fillStyle = "#1a1a1a";
+    ctx.fillRect(3, 2, 2, 2);
+    ctx.fillRect(en.w - 5, 2, 2, 2);
+  } else {
+    // Two-Face — split palette down the middle
+    const half = Math.floor(en.w / 2);
+    ctx.fillStyle = "#26282f";
+    ctx.fillRect(2, en.h - 7, 4, 7);
+    ctx.fillStyle = "#4a1414";
+    ctx.fillRect(en.w - 6, en.h - 7, 4, 7);
+
+    ctx.fillStyle = "#3a3f4d";
+    ctx.fillRect(1, 7, half, en.h - 13);
+    ctx.fillStyle = "#7a2a2a";
+    ctx.fillRect(1 + half, 7, en.w - 1 - half, en.h - 13);
+
+    ctx.fillStyle = "#7a2a2a";
+    ctx.fillRect(-1, 9, 4, 7);
+    ctx.fillStyle = "#3a3f4d";
+    if (aiming) {
+      ctx.fillRect(en.w - 2, 4, 8, 3);
+      ctx.fillStyle = "#e8c34a";
+      ctx.fillRect(en.w + 5, 3, 2, 2);
+    } else {
+      ctx.fillRect(en.w - 3, 9, 4, 7);
+    }
+
+    ctx.fillStyle = "#c9a883";
+    ctx.fillRect(2, 0, half, 8);
+    ctx.fillStyle = "#9aa0a8";
+    ctx.fillRect(2 + half, 0, en.w - 2 - half, 8);
+    ctx.fillStyle = "#1a1a1a";
+    ctx.fillRect(3, 3, 2, 2);
+    ctx.fillRect(en.w - 5, 3, 2, 2);
+
+    ctx.fillStyle = "#e8c34a";
+    ctx.beginPath();
+    ctx.arc(en.w / 2, en.h - 9, 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+function drawEnemies() {
+  for (const en of enemies) {
+    if (en.alive) drawHenchman(en);
+  }
+}
+
+function drawJokerBoss() {
+  if (!jokerBoss.alive) return;
+  const x = jokerBoss.x - cameraX;
+  if (x < -40 || x > W + 40) return;
+
+  const telegraphing = jokerBoss.mode === "telegraph";
+  const slamming = jokerBoss.mode === "slam";
+  const armed = telegraphing || slamming;
+  const bob = Math.round(Math.sin(elapsed * 3.2) * 1);
+  const w = jokerBoss.w, h = jokerBoss.h;
+
+  ctx.save();
+  ctx.translate(Math.round(x + w / 2), Math.round(jokerBoss.y + bob));
+  ctx.scale(jokerBoss.facing, 1);
+  ctx.translate(-w / 2, 0);
+
+  if (slamming) {
+    ctx.rotate(-0.15);
+  } else if (telegraphing) {
+    ctx.translate(w / 2, h);
+    ctx.scale(1.08, 0.9);
+    ctx.translate(-w / 2, -h);
+  }
+
+  // tailcoat flap (behind)
+  ctx.fillStyle = "#4a2c66";
+  ctx.beginPath();
+  ctx.moveTo(2, h - 10);
+  ctx.lineTo(-3, h + 2);
+  ctx.lineTo(1, h - 4);
+  ctx.lineTo(3, h + 3);
+  ctx.lineTo(6, h - 6);
+  ctx.closePath();
+  ctx.fill();
+
+  // legs
+  ctx.fillStyle = "#2c2233";
+  ctx.fillRect(3, h - 8, 5, 8);
+  ctx.fillRect(w - 8, h - 8, 5, 8);
+
+  // purple suit torso
+  ctx.fillStyle = "#5a3a7a";
+  ctx.fillRect(1, 9, w - 2, h - 19);
+  // green waistcoat
+  ctx.fillStyle = "#3c8f4a";
+  ctx.fillRect(w / 2 - 2, 10, 4, h - 20);
+  // flower lapel
+  ctx.fillStyle = "#e0413d";
+  ctx.fillRect(3, 10, 3, 3);
+
+  // arms — mallet raised when winding up or swinging
+  ctx.fillStyle = "#5a3a7a";
+  ctx.fillRect(-2, 11, 4, 8);
+  if (armed) {
+    ctx.fillRect(w - 3, 3, 9, 4);
+    ctx.fillStyle = "#3a2a22";
+    ctx.fillRect(w + 4, -1, 6, 6);
+  } else {
+    ctx.fillRect(w - 4, 11, 4, 8);
+  }
+
+  // head
+  ctx.fillStyle = "#f0e6d8";
+  ctx.fillRect(w / 2 - 8, 0, 16, 9);
+  // wild green hair
+  ctx.fillStyle = "#5fbf4a";
+  ctx.fillRect(w / 2 - 9, -4, 5, 6);
+  ctx.fillRect(w / 2 + 4, -4, 5, 6);
+  ctx.fillRect(w / 2 - 3, -5, 6, 5);
+  // grin
+  ctx.fillStyle = "#c0392b";
+  ctx.fillRect(w / 2 - 6, 5, 12, 2);
+  // eyes — flare red when about to attack
+  ctx.fillStyle = armed ? "#ff5b4a" : "#1a1a1a";
+  ctx.fillRect(w / 2 - 5, 2, 3, 2);
+  ctx.fillRect(w / 2 + 2, 2, 3, 2);
+
+  ctx.restore();
+}
+
+function drawBane() {
+  if (!bane.alive) return;
+  const x = bane.x - cameraX;
+  if (x < -50 || x > W + 50) return;
+
+  const charging = bane.mode === "charging";
+  const telegraphing = bane.mode === "telegraph";
+  const bob = Math.round(Math.sin(elapsed * 2.4) * 1);
+  const w = bane.w, h = bane.h;
+
+  ctx.save();
+  ctx.translate(Math.round(x + w / 2), Math.round(bane.y + bob));
+  ctx.scale(bane.facing, 1);
+  ctx.translate(-w / 2, 0);
+
+  if (charging) {
+    ctx.rotate(0.12);
+  } else if (telegraphing) {
+    ctx.translate(w / 2, h);
+    ctx.scale(1.05, 0.94);
+    ctx.translate(-w / 2, -h);
+  }
+
+  // legs
+  ctx.fillStyle = "#1c1c22";
+  ctx.fillRect(4, h - 10, 8, 10);
+  ctx.fillRect(w - 12, h - 10, 8, 10);
+
+  // muscular torso + harness straps
+  ctx.fillStyle = "#8a6a52";
+  ctx.fillRect(2, 12, w - 4, 15);
+  ctx.fillStyle = "#3a2a22";
+  ctx.fillRect(2, 12, w - 4, 3);
+  ctx.fillRect(w / 2 - 2, 12, 4, 15);
+
+  // huge arms + fists
+  ctx.fillStyle = "#8a6a52";
+  ctx.fillRect(-4, 11, 7, 13);
+  ctx.fillRect(w - 3, 11, 7, 13);
+  ctx.fillStyle = "#6e523d";
+  ctx.fillRect(-5, 22, 8, 6);
+  ctx.fillRect(w - 3, 22, 8, 6);
+
+  // bald head
+  ctx.fillStyle = "#c79a78";
+  ctx.fillRect(w / 2 - 7, 0, 14, 11);
+  // venom mask
+  ctx.fillStyle = telegraphing ? "#8a2020" : "#3a1418";
+  ctx.fillRect(w / 2 - 7, 5, 14, 7);
+  // tubes into the mask
+  ctx.fillStyle = "#4a4a4a";
+  ctx.fillRect(w / 2 - 9, 3, 2, 6);
+  ctx.fillRect(w / 2 + 7, 3, 2, 6);
+  // eyes — flare red when about to attack
+  ctx.fillStyle = telegraphing || charging ? "#ff5b4a" : "#1a1a1a";
+  ctx.fillRect(w / 2 - 5, 3, 3, 2);
+  ctx.fillRect(w / 2 + 2, 3, 3, 2);
+
+  ctx.restore();
+}
+
+function drawCharacter(ch, palette) {
+  const x = Math.round(ch.x - cameraX);
+  const y = Math.round(ch.y);
+
+  if (ch.invulnTimer > 0 && Math.floor(elapsed * 14) % 2 === 0) {
+    ctx.globalAlpha = 0.4;
+  }
+
+  // continuous running gait — a smooth sine-driven stride instead of a hard frame-switch
+  const runPhase = ch.animTimer * 16;
+  const bob = ch.state === "run" ? Math.round((1 - Math.abs(Math.cos(runPhase))) * 1.6) : 0;
+  const flap = Math.round(Math.sin(ch.animTimer * 9) * 2); // cape flutter while gliding
+
+  ctx.save();
+  ctx.translate(x + ch.w / 2, y + bob);
+  ctx.scale(ch.facing, 1);
+  ctx.translate(-ch.w / 2, 0);
+
+  // acrobatic flip on double jump
+  if (ch.flipTimer > 0) {
+    const angle = (1 - ch.flipTimer / FLIP_DURATION) * Math.PI * 2;
+    ctx.translate(ch.w / 2, ch.h / 2);
+    ctx.rotate(angle);
+    ctx.translate(-ch.w / 2, -ch.h / 2);
+  }
+
+  // landing squash, anchored at the feet
+  if (ch.landTimer > 0 && ch.flipTimer <= 0) {
+    const t = ch.landTimer / LAND_SQUASH_TIME;
+    ctx.translate(ch.w / 2, ch.h);
+    ctx.scale(1 + t * 0.18, 1 - t * 0.22);
+    ctx.translate(-ch.w / 2, -ch.h);
+  }
+
+  // lean into the run for a sense of speed
+  if (ch.state === "run") {
+    ctx.translate(ch.w / 2, ch.h * 0.75);
+    ctx.rotate(0.1);
+    ctx.translate(-ch.w / 2, -ch.h * 0.75);
+  }
+
+  const { K, KD, CAPE, CAPE_EDGE, Y, SK, WH } = palette;
+
+  function capePath(points) {
+    ctx.beginPath();
+    ctx.moveTo(points[0][0], points[0][1]);
+    for (let i = 1; i < points.length; i++) ctx.lineTo(points[i][0], points[i][1]);
+    ctx.closePath();
+    ctx.fillStyle = CAPE;
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = CAPE_EDGE;
+    ctx.stroke();
+  }
+
+  // one leg of the running gait: swings fore/aft and shortens (knee-bend) as it lifts through recovery
+  function runLeg(baseX, phase) {
+    const swing = Math.sin(phase);
+    const xOff = Math.round(swing * 3);
+    const lift = Math.max(0, -swing) * 3;
+    const len = 7 - Math.round(lift);
+    ctx.fillRect(baseX + xOff, 13, 4, len);
+  }
+
+  // ---- cape (behind body) ----
+  if (ch.state === "glide") {
+    capePath([[6, 3], [-14, 2 + flap], [-10, 9], [-19, 10 + flap], [-9, 15], [2, 12]]);
+  } else if (ch.state === "wallslide") {
+    capePath([[5, 2], [-4, 6], [-2, 15], [4, 12]]);
+  } else if (ch.state === "jump" || ch.state === "fall") {
+    capePath([[6, 2], [-8, 4], [-6, 10], [-2, 8], [3, 12]]);
+  } else if (ch.state === "run") {
+    const sway = Math.round(Math.sin(runPhase) * 4);
+    capePath([[5, 2], [-6 + sway, 6], [-3 + sway, 13], [4, 10]]);
+  } else {
+    capePath([[5, 2], [-5, 5], [-3, 14], [4, 11]]);
+  }
+
+  // ---- legs ----
+  ctx.fillStyle = KD;
+  if (ch.state === "run") {
+    runLeg(3, runPhase);
+    runLeg(8, runPhase + Math.PI);
+  } else if (ch.state === "jump") {
+    ctx.fillRect(3, 13, 4, 5);
+    ctx.fillRect(8, 14, 4, 5);
+  } else if (ch.state === "fall" || ch.state === "glide") {
+    ctx.fillRect(2, 14, 4, 5);
+    ctx.fillRect(9, 15, 4, 5);
+  } else if (ch.state === "wallslide") {
+    ctx.fillRect(3, 13, 4, 7);
+    ctx.fillRect(8, 13, 4, 7);
+  } else {
+    ctx.fillRect(3, 14, 4, 6);
+    ctx.fillRect(8, 14, 4, 6);
+  }
+
+  // ---- torso ----
+  ctx.fillStyle = K;
+  ctx.fillRect(2, 7, 11, 8);
+
+  // belt
+  ctx.fillStyle = Y;
+  ctx.fillRect(2, 13, 11, 2);
+
+  // chest emblem
+  ctx.fillStyle = Y;
+  ctx.fillRect(6, 9, 3, 3);
+
+  // ---- arms ----
+  ctx.fillStyle = K;
+  if (ch.punchTimer > 0) {
+    // jabbing arm punches forward with an impact spark, other arm braces back
+    ctx.fillRect(10, 7, 9, 3);
+    ctx.fillRect(1, 9, 3, 5);
+    ctx.fillStyle = "#fff6d0";
+    ctx.fillRect(19, 6, 2, 2);
+    ctx.fillRect(21, 7, 1, 1);
+    ctx.fillRect(19, 9, 1, 1);
+  } else if (ch.throwTimer > 0) {
+    ctx.fillRect(10, 6, 8, 3);
+    ctx.fillRect(1, 9, 3, 5);
+  } else if (ch.state === "glide") {
+    ctx.fillRect(-4, 5 + flap, 7, 3);
+    ctx.fillRect(11, 5 - flap, 7, 3);
+  } else if (ch.state === "wallslide") {
+    ctx.fillRect(-3, 7, 5, 4);
+    ctx.fillRect(11, 10, 3, 5);
+  } else if (ch.state === "jump") {
+    ctx.fillRect(1, 3, 3, 6);
+    ctx.fillRect(11, 3, 3, 6);
+  } else if (ch.state === "fall") {
+    ctx.fillRect(1, 8, 3, 5);
+    ctx.fillRect(11, 8, 3, 5);
+  } else if (ch.state === "run") {
+    const armSwing = Math.round(Math.sin(runPhase + Math.PI) * 4);
+    ctx.fillRect(1, 8 + armSwing, 3, 6);
+    ctx.fillRect(11, 8 - armSwing, 3, 6);
+  } else {
+    ctx.fillRect(1, 8, 3, 6);
+    ctx.fillRect(11, 8, 3, 6);
+  }
+
+  // ---- cowl / head ----
+  if (palette.hasEars) {
+    ctx.fillStyle = K;
+    ctx.fillRect(2, 0, 11, 8);
+    // ears
+    ctx.beginPath();
+    ctx.moveTo(3, 0); ctx.lineTo(4, -5); ctx.lineTo(6, 0);
+    ctx.closePath(); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(9, 0); ctx.lineTo(11, -5); ctx.lineTo(12, 0);
+    ctx.closePath(); ctx.fill();
+    // jaw
+    ctx.fillStyle = SK;
+    ctx.fillRect(4, 5, 7, 3);
+    // glowing eyes (a touch bigger/brighter for readability)
+    ctx.fillStyle = WH;
+    ctx.fillRect(4, 3, 3, 2);
+    ctx.fillRect(9, 3, 3, 2);
+  } else {
+    // Robin: bare face with dark hair and a domino mask instead of a full cowl
+    ctx.fillStyle = SK;
+    ctx.fillRect(2, 2, 11, 6);
+    ctx.fillStyle = "#241a12";
+    ctx.fillRect(2, -1, 11, 4);
+    ctx.fillStyle = "#1a1a1a";
+    ctx.fillRect(2, 3, 11, 2);
+    ctx.fillStyle = WH;
+    ctx.fillRect(4, 3, 3, 2);
+    ctx.fillRect(9, 3, 3, 2);
+  }
+
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+function drawDamageFlash() {
+  if (damageFlashTimer <= 0) return;
+  ctx.fillStyle = `rgba(200,30,30,${(damageFlashTimer / 0.15) * 0.35})`;
+  ctx.fillRect(0, 0, W, H);
+}
+
+function render() {
+  drawBackground();
+  drawGround();
+  drawBeacon();
+  if (gordonVisible) drawGordon();
+  drawEnemies();
+  drawJokerBoss();
+  drawBane();
+  drawEnemyProjectiles();
+  drawParticles();
+  drawProjectiles();
+  drawCharacter(batman, BATMAN_PALETTE);
+  if (robin.active) drawCharacter(robin, ROBIN_PALETTE);
+  drawDamageFlash();
+}
+
+// ---------------------------------------------------------------------------
+// Networking — serialize the host's state for the guest, or apply a
+// received snapshot on the guest side
+// ---------------------------------------------------------------------------
+function charSnapshot(ch) {
+  return {
+    x: ch.x, y: ch.y, facing: ch.facing, state: ch.state,
+    animTimer: ch.animTimer, flipTimer: ch.flipTimer, landTimer: ch.landTimer,
+    throwTimer: ch.throwTimer, punchTimer: ch.punchTimer, invulnTimer: ch.invulnTimer,
+    health: ch.health, maxHealth: ch.maxHealth,
+  };
+}
+
+function enemySnapshot(en) {
+  return {
+    x: en.x, y: en.y, facing: en.facing, alive: en.alive,
+    hp: en.hp, maxHp: en.maxHp, telegraphTimer: en.telegraphTimer,
+  };
+}
+
+function bossSnapshot(b) {
+  return {
+    x: b.x, y: b.y, facing: b.facing, alive: b.alive,
+    hp: b.hp, maxHp: b.maxHp, mode: b.mode,
+  };
+}
+
+function serializeState() {
+  return {
+    cameraX, elapsed, gameWon, gameRunning, beaconActive, ending, endTimer,
+    lives, villainsDefeated,
+    batman: charSnapshot(batman),
+    robin: robin.active ? charSnapshot(robin) : null,
+    enemies: enemies.map(enemySnapshot),
+    jokerBoss: bossSnapshot(jokerBoss),
+    bane: bossSnapshot(bane),
+    projectiles: projectiles.map((p) => ({ x: p.x, y: p.y, rot: p.rot })),
+    enemyProjectiles: enemyProjectiles.map((p) => ({ x: p.x, y: p.y, rot: p.rot, type: p.type })),
+    particles: particles.map((p) => ({ x: p.x, y: p.y, size: p.size, life: p.life, maxLife: p.maxLife })),
+    gordon: { x: gordon.x, y: gordon.y, state: gordon.state, animTimer: gordon.animTimer },
+    gordonVisible,
+    jokerBossEngaged, bossEngaged,
+    winStatsText: gameWon
+      ? `VILLAINS DEFEATED: ${villainsDefeated}/${enemies.length + 2}   TIME: ${elapsed.toFixed(1)}s`
+      : "",
+  };
+}
+
+function applyState(s) {
+  cameraX = s.cameraX;
+  elapsed = s.elapsed;
+  gameWon = s.gameWon;
+  gameRunning = s.gameRunning;
+  beaconActive = s.beaconActive;
+  ending = s.ending;
+  endTimer = s.endTimer;
+  lives = s.lives;
+  villainsDefeated = s.villainsDefeated;
+
+  Object.assign(batman, s.batman);
+  if (s.robin) {
+    Object.assign(robin, s.robin);
+    robin.active = true;
+  } else {
+    robin.active = false;
+  }
+
+  s.enemies.forEach((es, i) => { if (enemies[i]) Object.assign(enemies[i], es); });
+  Object.assign(jokerBoss, s.jokerBoss);
+  Object.assign(bane, s.bane);
+
+  projectiles.length = 0;
+  s.projectiles.forEach((p) => projectiles.push(p));
+  enemyProjectiles.length = 0;
+  s.enemyProjectiles.forEach((p) => enemyProjectiles.push(p));
+  particles.length = 0;
+  s.particles.forEach((p) => particles.push(p));
+
+  Object.assign(gordon, s.gordon);
+  gordonVisible = s.gordonVisible;
+  jokerBossEngaged = s.jokerBossEngaged;
+  bossEngaged = s.bossEngaged;
+
+  updateHealthUIFor(batman);
+  if (robin.active) updateHealthUIFor(robin);
+  document.getElementById("villainCount").textContent = villainsDefeated;
+  document.getElementById("livesCount").textContent = Math.max(lives, 0);
+  document.getElementById("robinHealthBox").classList.toggle("hidden", !robin.active);
+
+  let bossVisible = false, bossName = "", bossHp = 0, bossMaxHp = 1;
+  if (bossEngaged && bane.alive) {
+    bossVisible = true; bossName = "BANE"; bossHp = bane.hp; bossMaxHp = bane.maxHp;
+  } else if (jokerBossEngaged && jokerBoss.alive) {
+    bossVisible = true; bossName = "JOKER"; bossHp = jokerBoss.hp; bossMaxHp = jokerBoss.maxHp;
+  }
+  const bossBarEl = document.getElementById("bossBar");
+  if (bossVisible) {
+    document.getElementById("bossName").textContent = bossName;
+    document.getElementById("bossBarFill").style.width = (Math.max(bossHp, 0) / bossMaxHp) * 100 + "%";
+    bossBarEl.classList.remove("hidden");
+  } else {
+    bossBarEl.classList.add("hidden");
+  }
+
+  document.getElementById("titleScreen").classList.toggle("hidden", gameRunning || gameWon);
+  document.getElementById("winScreen").classList.toggle("hidden", !gameWon);
+  if (gameWon) document.getElementById("winStats").textContent = s.winStatsText;
+}
+
+function updateUIForRole(role) {
+  const startBtn = document.getElementById("startBtn");
+  const controlsBlock = document.getElementById("controlsBlock");
+  const coopStatus = document.getElementById("coopStatus");
+  const titleTagline = document.getElementById("titleTagline");
+
+  if (role === "guest") {
+    startBtn.classList.add("hidden");
+    controlsBlock.classList.add("hidden");
+    titleTagline.textContent = "You are ROBIN.";
+    coopStatus.textContent = "Connected! Waiting for Batman to press start...";
+  } else if (role === "host") {
+    coopStatus.textContent = NET.guestConnected
+      ? "Robin has joined! Press start when ready."
+      : `Playing solo. For 2-player co-op, have a second device on this WiFi open: http://${location.host}`;
+  } else {
+    coopStatus.textContent = "";
+  }
+}
+
+NET.on("role", updateUIForRole);
+NET.on("peerJoin", () => {
+  robin.active = true;
+  robin.x = batman.x - 15;
+  robin.y = batman.y;
+  robin.checkpoint = { x: robin.x, y: robin.y };
+  robin.health = robin.maxHealth;
+  updateHealthUIFor(robin);
+  document.getElementById("robinHealthBox").classList.remove("hidden");
+  updateUIForRole("host");
+});
+NET.on("peerLeave", () => {
+  robin.active = false;
+  document.getElementById("robinHealthBox").classList.add("hidden");
+  updateUIForRole("host");
+});
+NET.on("input", (input) => {
+  remoteRobinInput.left = !!input.left;
+  remoteRobinInput.right = !!input.right;
+  remoteRobinInput.jumpHeld = !!input.jumpHeld;
+  if (input.jumpEdge) remoteRobinInput.jumpEdgeQueued = true;
+  if (input.throwEdge) remoteRobinInput.throwEdgeQueued = true;
+  if (input.punchEdge) remoteRobinInput.punchEdgeQueued = true;
+});
+NET.on("state", (s) => {
+  if (NET.role === "guest") applyState(s);
+});
+
+// ---------------------------------------------------------------------------
+// Main loop
+// ---------------------------------------------------------------------------
+let lastTime = performance.now();
+function loop(now) {
+  const dt = Math.min((now - lastTime) / 1000, 1 / 30);
+  lastTime = now;
+
+  if (NET.role === "guest") {
+    // no local physics — the render below just draws whatever the host last sent
+  } else {
+    if (gameRunning && !gameWon) {
+      update(dt);
+    } else if (ending) {
+      updateEnding(dt);
+    }
+    NET.sendState(serializeState()); // no-op unless we're actually hosting a connected guest
+  }
+
+  render();
+
+  requestAnimationFrame(loop);
+}
+
+function winGame() {
+  gameRunning = false;
+  document.getElementById("winStats").textContent =
+    `VILLAINS DEFEATED: ${villainsDefeated}/${enemies.length + 2}   TIME: ${elapsed.toFixed(1)}s`;
+  document.getElementById("winScreen").classList.remove("hidden");
+}
+
+function resetCharacter(ch, x, y) {
+  ch.x = x; ch.y = y; ch.vx = 0; ch.vy = 0;
+  ch.jumpsUsed = 0; ch.flipTimer = 0; ch.landTimer = 0;
+  ch.throwTimer = 0; ch.throwCooldown = 0; ch.wasOnGround = false;
+  ch.punchTimer = 0; ch.punchCooldown = 0; ch.punchHits = new Set();
+  ch.onWallLeft = false; ch.onWallRight = false; ch.wallJumpLockTimer = 0;
+  ch.hitStunTimer = 0; ch.invulnTimer = 0;
+  ch.health = ch.maxHealth;
+  ch.checkpoint = { x, y };
+  updateHealthUIFor(ch);
+}
+
+function startGame() {
+  document.getElementById("titleScreen").classList.add("hidden");
+  document.getElementById("winScreen").classList.add("hidden");
+  gameWon = false;
+  gameRunning = true;
+  beaconActive = false;
+  ending = false;
+  endTimer = 0;
+  gordonVisible = false;
+  gordon.x = beaconCameraX - 15;
+  gordon.state = "stand";
+  gordon.animTimer = 0;
+  elapsed = 0;
+  villainsDefeated = 0;
+  lives = 3;
+  document.getElementById("villainCount").textContent = 0;
+  document.getElementById("livesCount").textContent = 3;
+
+  for (const en of enemies) {
+    en.alive = true;
+    en.hp = en.maxHp;
+    en.x = en.startX;
+    en.dir = en.startDir;
+    en.facing = en.startDir;
+    en.attackTimer = 1 + Math.random();
+    en.telegraphTimer = 0;
+    en.pendingAttack = false;
+  }
+
+  jokerBoss.alive = true;
+  jokerBoss.hp = jokerBoss.maxHp;
+  jokerBoss.x = jokerBoss.startX;
+  jokerBoss.dir = jokerBoss.startDir;
+  jokerBoss.facing = jokerBoss.startDir;
+  jokerBoss.mode = "patrol";
+  jokerBoss.pendingAction = null;
+  jokerBoss.telegraphTimer = 0;
+  jokerBoss.volleyShotsLeft = 0;
+  jokerBoss.volleyTimer = 0;
+  jokerBoss.slamTimer = 0;
+  jokerBoss.recoverTimer = 0;
+  jokerBoss.attackTimer = 1.3 + Math.random();
+  jokerBossEngaged = false;
+
+  bane.alive = true;
+  bane.hp = bane.maxHp;
+  bane.x = bane.startX;
+  bane.dir = bane.startDir;
+  bane.facing = bane.startDir;
+  bane.mode = "patrol";
+  bane.pendingAction = null;
+  bane.telegraphTimer = 0;
+  bane.chargeTimer = 0;
+  bane.recoverTimer = 0;
+  bane.dustTimer = 0;
+  bane.attackTimer = 1.5 + Math.random();
+  bossEngaged = false;
+
+  document.getElementById("bossBar").classList.add("hidden");
+  document.getElementById("bossHint").classList.add("hidden");
+
+  particles.length = 0;
+  projectiles.length = 0;
+  enemyProjectiles.length = 0;
+  damageFlashTimer = 0;
+
+  resetCharacter(batman, 20, 150);
+  if (robin.active) resetCharacter(robin, 5, 150);
+}
+
+document.getElementById("startBtn").addEventListener("click", () => {
+  if (NET.role !== "guest") startGame();
+});
+document.getElementById("winRestartBtn").addEventListener("click", () => {
+  if (NET.role !== "guest") startGame();
+});
+
+requestAnimationFrame(loop);
