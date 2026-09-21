@@ -90,9 +90,16 @@ async def ws_handler(request):
     return ws
 
 
+async def index_handler(request):
+    # aiohttp's static handler 403s on a bare directory request (no filename),
+    # so the plain root URL needs its own explicit route to index.html
+    return web.FileResponse(ROOT / "index.html")
+
+
 def main():
     port = int(os.environ.get("PORT", 8000))  # Render (and other PaaS hosts) assign this
     app = web.Application()
+    app.router.add_get("/", index_handler)
     app.router.add_get("/ws", ws_handler)
     app.router.add_static("/", ROOT, show_index=False)
     print(f"serving http://0.0.0.0:{port}  (relay at /ws)")
