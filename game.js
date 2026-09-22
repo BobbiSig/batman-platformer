@@ -95,8 +95,13 @@ const platforms = [
   { x: 1300, y: 70, w: 200, h: 14 },   // P4b — grapple tower rooftop
   { x: 1570, y: 190, w: 200, h: 60 },  // P5
   { x: 1950, y: 205, w: 320, h: 60 },  // P6
-  { x: 2340, y: 190, w: 260, h: 60 },  // P7 — the Joker's arena
-  { x: 2670, y: 190, w: 300, h: 60 },  // P8 — Bane's arena, beacon at the far end
+  { x: 2340, y: 170, w: 50, h: 12 },   // hop gauntlet: F1
+  { x: 2450, y: 140, w: 50, h: 12 },   // F2
+  { x: 2560, y: 170, w: 50, h: 12 },   // F3
+  { x: 2670, y: 195, w: 50, h: 12 },   // F4
+  { x: 2790, y: 190, w: 220, h: 60 },  // P6b — landing zone after the gauntlet
+  { x: 3080, y: 190, w: 260, h: 60 },  // P7 — the Joker's arena
+  { x: 3410, y: 190, w: 300, h: 60 },  // P8 — Bane's arena, beacon at the far end
 ];
 
 // two facing walls: jump into the gap, slide, and wall-jump between them to climb up
@@ -125,7 +130,7 @@ const windZones = [
 
 const allSolids = platforms.concat(floaters).concat(walls);
 
-const levelWidth = 2970 + 60;
+const levelWidth = 3710 + 60;
 
 const enemies = [
   {
@@ -146,10 +151,16 @@ const enemies = [
     attackTimer: 2.2, telegraphTimer: 0, pendingAttack: false,
     hp: 3, maxHp: 3, knockbackVx: 0, knockbackTimer: 0,
   },
+  {
+    type: "joker", x: 2860, y: 170, w: 15, h: 20, startX: 2860,
+    minX: 2810, maxX: 2970, dir: 1, startDir: 1, facing: 1, alive: true,
+    attackTimer: 1.6, telegraphTimer: 0, pendingAttack: false,
+    hp: 2, maxHp: 2, knockbackVx: 0, knockbackTimer: 0,
+  },
 ];
 const ENEMY_SPEED = 40;
 
-const beacon = { x: 2920, y: 130, w: 20, h: 60 };
+const beacon = { x: 3660, y: 130, w: 20, h: 60 };
 let beaconActive = false;
 
 // ---------------------------------------------------------------------------
@@ -170,10 +181,13 @@ const JOKER_BOSS_CARD_BURST_COUNT = 3;
 const JOKER_BOSS_CARD_BURST_GAP = 0.09;
 const JOKER_BOSS_SLAM_ACTIVE = 0.15;
 const JOKER_BOSS_ENGAGE_RANGE = 240;
+const JOKER_BOSS_GAS_DAMAGE = 8;
+const JOKER_BOSS_GAS_SPEED = 160;
+const STUN_DURATION = 1.8; // s a laughing-gas hit locks out all input
 
 const jokerBoss = {
-  x: 2460, y: 164, w: 20, h: 26, startX: 2460,
-  minX: 2360, maxX: 2580, dir: 1, startDir: 1, facing: 1,
+  x: 3200, y: 164, w: 20, h: 26, startX: 3200,
+  minX: 3100, maxX: 3320, dir: 1, startDir: 1, facing: 1,
   alive: true, hp: JOKER_BOSS_MAX_HP, maxHp: JOKER_BOSS_MAX_HP,
   mode: "patrol", // patrol, telegraph, volley, slam, recover
   pendingAction: null,
@@ -201,9 +215,14 @@ const BANE_CHARGE_MAX_TIME = 0.9;
 const BANE_RECOVER_TIME = 0.7;
 const BANE_ENGAGE_RANGE = 260;
 
+const SHOCKWAVE_SPEED = 260;    // px/s, travels outward along the ground both ways
+const SHOCKWAVE_MAX_DIST = 300; // px before it dissipates
+const SHOCKWAVE_HEIGHT = 22;    // hitbox height — jump clears it since it only hits grounded characters
+const SHOCKWAVE_DAMAGE = 18;
+
 const bane = {
-  x: 2760, y: 152, w: 28, h: 38, startX: 2760,
-  minX: 2690, maxX: 2880, dir: 1, startDir: 1, facing: 1,
+  x: 3500, y: 152, w: 28, h: 38, startX: 3500,
+  minX: 3430, maxX: 3620, dir: 1, startDir: 1, facing: 1,
   alive: true, hp: BANE_MAX_HP, maxHp: BANE_MAX_HP,
   mode: "patrol", // patrol, telegraph, charging, recover
   pendingAction: null,
@@ -290,6 +309,7 @@ function makeCharacter(x, y) {
     grappleTarget: null,
     grappleCooldown: 0,
     grappleBufferTimer: 0,
+    stunTimer: 0,
     checkpoint: { x, y },
   };
 }
@@ -324,7 +344,8 @@ function nearestCharacter(x) {
 
 const particles = [];
 const projectiles = [];      // batarangs (player)
-const enemyProjectiles = []; // bullets / coins (henchmen)
+const enemyProjectiles = []; // bullets / coins / gas (henchmen)
+const shockwaves = [];       // Bane's ground-slam shockwaves
 
 let villainsDefeated = 0;
 let lives = 3;
@@ -476,6 +497,7 @@ function respawnCharacter(ch) {
   ch.hitStunTimer = 0;
   ch.grappling = false;
   ch.grappleTarget = null;
+  ch.stunTimer = 0;
   ch.health = ch.maxHealth;
   ch.invulnTimer = INVULN_TIME;
   updateHealthUIFor(ch);
@@ -701,8 +723,10 @@ function updateEnemyProjectiles(dt) {
         const dmg = b.type === "joker" ? BULLET_DAMAGE
           : b.type === "twoface" ? COIN_DAMAGE
           : b.type === "card" ? JOKER_BOSS_CARD_DAMAGE
+          : b.type === "gas" ? JOKER_BOSS_GAS_DAMAGE
           : BANE_DEBRIS_DAMAGE;
-        takeDamage(ch, dmg, Math.sign(b.vx) || 1);
+        const landed = takeDamage(ch, dmg, Math.sign(b.vx) || 1);
+        if (landed && b.type === "gas") ch.stunTimer = STUN_DURATION;
         hit = true;
         break;
       }
@@ -749,6 +773,25 @@ function drawEnemyProjectiles() {
       ctx.fillStyle = "#3c8f4a";
       ctx.fillRect(-4, 1, 8, 2);
       ctx.restore();
+    } else if (b.type === "gas") {
+      // the Joker's laughing-gas canister, trailing a little green cloud
+      ctx.save();
+      ctx.globalAlpha = 0.35;
+      ctx.fillStyle = "#5fbf4a";
+      ctx.beginPath();
+      ctx.arc(x - Math.sign(b.vx) * 4, b.y, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      ctx.save();
+      ctx.translate(x, b.y);
+      ctx.rotate(b.rot);
+      ctx.fillStyle = "#3c8f4a";
+      ctx.beginPath();
+      ctx.arc(0, 0, 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#c9c9c9";
+      ctx.fillRect(-1, -4, 2, 2);
+      ctx.restore();
     } else {
       // Bane's thrown debris — a chunky spinning rock
       ctx.save();
@@ -772,6 +815,51 @@ function fireBaneDebris() {
     rot: 0,
     type: "debris",
   });
+}
+
+function fireBaneSlam() {
+  const cx = bane.x + bane.w / 2, groundY = bane.y + bane.h;
+  spawnDust(cx, groundY, 12, 160);
+  shockwaves.push({ x: cx, y: groundY, dir: -1, dist: 0 });
+  shockwaves.push({ x: cx, y: groundY, dir: 1, dist: 0 });
+}
+
+function updateShockwaves(dt) {
+  for (let i = shockwaves.length - 1; i >= 0; i--) {
+    const sw = shockwaves[i];
+    const step = SHOCKWAVE_SPEED * dt;
+    sw.x += sw.dir * step;
+    sw.dist += step;
+    if (sw.dist > SHOCKWAVE_MAX_DIST) {
+      shockwaves.splice(i, 1);
+      continue;
+    }
+    const box = { x: sw.x - 4, y: sw.y - SHOCKWAVE_HEIGHT, w: 8, h: SHOCKWAVE_HEIGHT };
+    for (const ch of activeCharacters()) {
+      if (ch.onGround && overlap(ch, box)) {
+        takeDamage(ch, SHOCKWAVE_DAMAGE, sw.dir);
+      }
+    }
+  }
+}
+
+function drawShockwaves() {
+  for (const sw of shockwaves) {
+    const x = sw.x - cameraX;
+    if (x < -20 || x > W + 20) continue;
+    const fade = Math.max(0, 1 - sw.dist / SHOCKWAVE_MAX_DIST);
+    ctx.save();
+    ctx.globalAlpha = fade;
+    ctx.strokeStyle = "#ff8a3d";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x - 7, sw.y);
+    ctx.lineTo(x - 2, sw.y - 7);
+    ctx.lineTo(x + 2, sw.y - 2);
+    ctx.lineTo(x + 7, sw.y - 9);
+    ctx.stroke();
+    ctx.restore();
+  }
 }
 
 // generic boss-bar UI, shared by whichever boss is currently engaged.
@@ -820,6 +908,16 @@ function fireJokerCard(en) {
   });
 }
 
+function fireJokerGas(en) {
+  enemyProjectiles.push({
+    x: en.facing > 0 ? en.x + en.w + 2 : en.x - 2,
+    y: en.y + 10,
+    vx: en.facing * JOKER_BOSS_GAS_SPEED,
+    rot: 0,
+    type: "gas",
+  });
+}
+
 function updateJokerBoss(dt) {
   if (!jokerBoss.alive) return;
 
@@ -841,7 +939,9 @@ function updateJokerBoss(dt) {
     if (jokerBoss.attackTimer <= 0 && dx < JOKER_BOSS_ATTACK_RANGE) {
       jokerBoss.mode = "telegraph";
       jokerBoss.telegraphTimer = JOKER_BOSS_TELEGRAPH;
-      jokerBoss.pendingAction = dx < JOKER_BOSS_MELEE_RANGE ? "slam" : (Math.random() < 0.7 ? "volley" : "slam");
+      jokerBoss.pendingAction = dx < JOKER_BOSS_MELEE_RANGE
+        ? (Math.random() < 0.5 ? "slam" : "gas")
+        : (Math.random() < 0.5 ? "volley" : "gas");
       jokerBoss.facing = target.x < jokerBoss.x ? -1 : 1;
     }
   } else if (jokerBoss.mode === "telegraph") {
@@ -852,6 +952,10 @@ function updateJokerBoss(dt) {
         jokerBoss.mode = "volley";
         jokerBoss.volleyShotsLeft = JOKER_BOSS_CARD_BURST_COUNT;
         jokerBoss.volleyTimer = 0;
+      } else if (jokerBoss.pendingAction === "gas") {
+        fireJokerGas(jokerBoss);
+        jokerBoss.mode = "recover";
+        jokerBoss.recoverTimer = 0.4;
       } else {
         jokerBoss.mode = "slam";
         jokerBoss.slamTimer = JOKER_BOSS_SLAM_ACTIVE;
@@ -928,7 +1032,8 @@ function updateBane(dt) {
     if (bane.attackTimer <= 0 && dx < BANE_ATTACK_RANGE) {
       bane.mode = "telegraph";
       bane.telegraphTimer = BANE_TELEGRAPH;
-      bane.pendingAction = Math.random() < 0.5 ? "charge" : "throw";
+      const roll = Math.random();
+      bane.pendingAction = roll < 0.34 ? "charge" : roll < 0.67 ? "slam" : "throw";
       bane.facing = target.x < bane.x ? -1 : 1;
     }
   } else if (bane.mode === "telegraph") {
@@ -939,6 +1044,10 @@ function updateBane(dt) {
         bane.mode = "charging";
         bane.chargeTimer = BANE_CHARGE_MAX_TIME;
         bane.dir = bane.facing;
+      } else if (bane.pendingAction === "slam") {
+        fireBaneSlam();
+        bane.mode = "recover";
+        bane.recoverTimer = 0.5;
       } else {
         fireBaneDebris();
         bane.mode = "patrol";
@@ -995,6 +1104,26 @@ function updateBane(dt) {
 // Update
 // ---------------------------------------------------------------------------
 function updateCharacter(ch, input, dt) {
+  // --- laughing-gas stun: no input at all until it wears off ---
+  if (ch.stunTimer > 0) {
+    ch.stunTimer -= dt;
+    // drain any presses so they don't fire the instant the stun ends
+    input.consumeJumpEdge();
+    input.consumeThrowEdge();
+    input.consumePunchEdge();
+    input.consumeGrappleEdge();
+
+    ch.vx *= 0.9;
+    ch.vy += GRAVITY * dt;
+    if (ch.vy > MAX_FALL) ch.vy = MAX_FALL;
+    resolveCollisions(ch, dt);
+    updateWallContacts(ch);
+    ch.state = "laughing";
+    ch.animTimer += dt;
+    if (ch.y > H + 40) respawnCharacter(ch);
+    return;
+  }
+
   // --- grappling hook ---
   if (ch.grappleCooldown > 0) ch.grappleCooldown -= dt;
 
@@ -1236,6 +1365,7 @@ function update(dt) {
   updateParticles(dt);
   updateProjectiles(dt);
   updateEnemyProjectiles(dt);
+  updateShockwaves(dt);
 
   if (damageFlashTimer > 0) damageFlashTimer -= dt;
 
@@ -2004,9 +2134,10 @@ function drawCharacter(ch, palette) {
   const runPhase = ch.animTimer * 16;
   const bob = ch.state === "run" ? Math.round((1 - Math.abs(Math.cos(runPhase))) * 1.6) : 0;
   const flap = Math.round(Math.sin(ch.animTimer * 9) * 2); // cape flutter while gliding
+  const laughShake = ch.state === "laughing" ? Math.round(Math.sin(ch.animTimer * 26) * 1) : 0;
 
   ctx.save();
-  ctx.translate(x + ch.w / 2, y + bob);
+  ctx.translate(x + ch.w / 2 + laughShake, y + bob);
   ctx.scale(ch.facing, 1);
   ctx.translate(-ch.w / 2, 0);
 
@@ -2036,7 +2167,10 @@ function drawCharacter(ch, palette) {
   const { K, KD, CAPE, CAPE_EDGE, Y, SK, WH } = palette;
 
   // ---- cape (behind body) ----
-  if (ch.state === "grapple") {
+  if (ch.state === "laughing") {
+    const wobble = Math.round(Math.sin(ch.animTimer * 10) * 2);
+    capePath([[5, 2], [-5 + wobble, 5], [-3 + wobble, 14], [4, 11]], CAPE, CAPE_EDGE);
+  } else if (ch.state === "grapple") {
     capePath([[6, 2], [-9, 3], [-7, 9], [-3, 7], [3, 12]], CAPE, CAPE_EDGE);
   } else if (ch.state === "glide") {
     capePath([[6, 3], [-14, 2 + flap], [-10, 9], [-19, 10 + flap], [-9, 15], [2, 12]], CAPE, CAPE_EDGE);
@@ -2053,7 +2187,11 @@ function drawCharacter(ch, palette) {
 
   // ---- legs ----
   ctx.fillStyle = KD;
-  if (ch.state === "run") {
+  if (ch.state === "laughing") {
+    const kneeBounce = Math.round(Math.abs(Math.sin(ch.animTimer * 13)) * 2);
+    ctx.fillRect(3, 14 - kneeBounce, 4, 6 + kneeBounce);
+    ctx.fillRect(8, 14 - kneeBounce, 4, 6 + kneeBounce);
+  } else if (ch.state === "run") {
     runLeg(3, runPhase);
     runLeg(8, runPhase + Math.PI);
   } else if (ch.state === "grapple") {
@@ -2098,6 +2236,10 @@ function drawCharacter(ch, palette) {
   } else if (ch.throwTimer > 0) {
     ctx.fillRect(10, 6, 8, 3);
     ctx.fillRect(1, 9, 3, 5);
+  } else if (ch.state === "laughing") {
+    // arms clutched around the belly, shaking with laughter
+    ctx.fillRect(1, 10, 5, 4);
+    ctx.fillRect(9, 10, 5, 4);
   } else if (ch.state === "grapple") {
     // leading arm stretched taut toward the hook line
     ctx.fillRect(10, 4, 9, 3);
@@ -2154,6 +2296,17 @@ function drawCharacter(ch, palette) {
     ctx.fillRect(9, 3, 3, 2);
   }
 
+  if (ch.state === "laughing") {
+    // bouncing "HA" marks above the head to sell the stun
+    const bounce = Math.sin(ch.animTimer * 10);
+    ctx.fillStyle = "#8de84c";
+    ctx.font = "bold 6px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("HA", 6, -9 + Math.round(bounce * 2));
+    ctx.fillText("HA", 13, -13 - Math.round(bounce * 2));
+    ctx.textAlign = "left";
+  }
+
   ctx.restore();
   ctx.globalAlpha = 1;
 }
@@ -2177,6 +2330,7 @@ function render() {
   drawJokerBoss();
   drawBane();
   drawEnemyProjectiles();
+  drawShockwaves();
   drawParticles();
   drawProjectiles();
   drawGrappleLine(batman);
@@ -2227,6 +2381,7 @@ function serializeState() {
     bane: bossSnapshot(bane),
     projectiles: projectiles.map((p) => ({ x: p.x, y: p.y, rot: p.rot, owner: p.owner })),
     enemyProjectiles: enemyProjectiles.map((p) => ({ x: p.x, y: p.y, rot: p.rot, type: p.type })),
+    shockwaves: shockwaves.map((sw) => ({ x: sw.x, y: sw.y, dist: sw.dist })),
     particles: particles.map((p) => ({ x: p.x, y: p.y, size: p.size, life: p.life, maxLife: p.maxLife })),
     gordon: { x: gordon.x, y: gordon.y, state: gordon.state, animTimer: gordon.animTimer },
     gordonVisible,
@@ -2269,6 +2424,8 @@ function applyState(s) {
   s.projectiles.forEach((p) => projectiles.push(p));
   enemyProjectiles.length = 0;
   s.enemyProjectiles.forEach((p) => enemyProjectiles.push(p));
+  shockwaves.length = 0;
+  s.shockwaves.forEach((sw) => shockwaves.push(sw));
   particles.length = 0;
   s.particles.forEach((p) => particles.push(p));
 
@@ -2386,6 +2543,7 @@ function resetCharacter(ch, x, y) {
   ch.onWallLeft = false; ch.onWallRight = false; ch.wallJumpLockTimer = 0;
   ch.hitStunTimer = 0; ch.invulnTimer = 0;
   ch.grappling = false; ch.grappleTarget = null; ch.grappleCooldown = 0; ch.grappleBufferTimer = 0;
+  ch.stunTimer = 0;
   ch.health = ch.maxHealth;
   ch.checkpoint = { x, y };
   updateHealthUIFor(ch);
@@ -2475,6 +2633,7 @@ function startGame() {
   particles.length = 0;
   projectiles.length = 0;
   enemyProjectiles.length = 0;
+  shockwaves.length = 0;
   damageFlashTimer = 0;
 
   resetCharacter(batman, 20, 150);
