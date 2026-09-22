@@ -450,6 +450,8 @@ function respawnCharacter(ch) {
   ch.vy = 0;
   ch.wallJumpLockTimer = 0;
   ch.hitStunTimer = 0;
+  ch.grappling = false;
+  ch.grappleTarget = null;
   ch.health = ch.maxHealth;
   ch.invulnTimer = INVULN_TIME;
   updateHealthUIFor(ch);
@@ -2262,6 +2264,7 @@ function resetCharacter(ch, x, y) {
   ch.punchTimer = 0; ch.punchCooldown = 0; ch.punchHits = new Set();
   ch.onWallLeft = false; ch.onWallRight = false; ch.wallJumpLockTimer = 0;
   ch.hitStunTimer = 0; ch.invulnTimer = 0;
+  ch.grappling = false; ch.grappleTarget = null; ch.grappleCooldown = 0; ch.grappleBufferTimer = 0;
   ch.health = ch.maxHealth;
   ch.checkpoint = { x, y };
   updateHealthUIFor(ch);
