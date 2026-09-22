@@ -230,15 +230,28 @@ let ending = false;
 let endTimer = 0;
 
 // ---------------------------------------------------------------------------
-// The Batmobile — drives in at the start of the level, heroes hop out of it
+// The Batmobile — screeches in, clips a goon on the way, and the heroes
+// flip out of it once parked
 // ---------------------------------------------------------------------------
-const BATMOBILE_SPEED = 135;   // px/s
-const BATMOBILE_DRIVE_TIME = 1.0; // s before it's parked and the first hop-out happens
-const INTRO_DURATION = 2.0;    // s from level start to handing over control
+const BATMOBILE_SPEED = 200;         // px/s
+const INTRO_POST_PARK_DURATION = 1.0; // s after parking before handing over control
+const GOON_HIT_VX = 220;
+const GOON_HIT_VY = -180;
+const GOON_ROT_SPEED = 16;
 
-const batmobile = { x: -140, targetX: -15 };
+const batmobile = { x: -160, targetX: 100 };
+
+// a henchman standing in the Batmobile's path — drawHenchman() renders him
+// (hp/maxHp: 0 so no health pips are drawn over a background gag character)
+const introGoon = {
+  type: "joker", x: 60, y: 170, w: 15, h: 20, startX: 60, startY: 170,
+  facing: -1, telegraphTimer: 0, hp: 0, maxHp: 0,
+  hit: false, vx: 0, vy: 0, rot: 0,
+};
+
 let intro = false;
 let introTimer = 0;
+let introParkedTimer = -1;
 let introBatmanRevealed = false;
 let introRobinRevealed = false;
 
@@ -1333,18 +1346,42 @@ function updateIntro(dt) {
     batmobile.x = Math.min(batmobile.x + BATMOBILE_SPEED * dt, batmobile.targetX);
   }
 
-  if (!introBatmanRevealed && introTimer > BATMOBILE_DRIVE_TIME) {
+  // the car clips a goon on the way in and sends him flying
+  if (!introGoon.hit && batmobile.x + 56 >= introGoon.x) {
+    introGoon.hit = true;
+    introGoon.vx = GOON_HIT_VX;
+    introGoon.vy = GOON_HIT_VY;
+    spawnDust(introGoon.x + introGoon.w / 2, introGoon.y + introGoon.h / 2, 8, 120);
+  }
+  if (introGoon.hit) {
+    introGoon.vy += GRAVITY * dt;
+    introGoon.x += introGoon.vx * dt;
+    introGoon.y += introGoon.vy * dt;
+    introGoon.rot += dt * GOON_ROT_SPEED;
+  }
+
+  const parked = batmobile.x >= batmobile.targetX;
+  if (parked && introParkedTimer < 0) introParkedTimer = 0;
+  else if (parked) introParkedTimer += dt;
+
+  // the heroes flip out of the car once it's actually stopped
+  if (introParkedTimer >= 0 && !introBatmanRevealed) {
     introBatmanRevealed = true;
-    batman.landTimer = LAND_SQUASH_TIME;
+    batman.flipTimer = FLIP_DURATION;
     spawnDust(batman.x + batman.w / 2, batman.y + batman.h, 5, 70);
   }
-  if (robin.active && !introRobinRevealed && introTimer > BATMOBILE_DRIVE_TIME + 0.25) {
+  if (introParkedTimer >= 0.25 && robin.active && !introRobinRevealed) {
     introRobinRevealed = true;
-    robin.landTimer = LAND_SQUASH_TIME;
+    robin.flipTimer = FLIP_DURATION;
     spawnDust(robin.x + robin.w / 2, robin.y + robin.h, 5, 70);
   }
 
-  if (intro && introTimer > INTRO_DURATION) {
+  // updateCharacter() (which normally ticks this down) never runs during the
+  // intro, so drive the flip animation directly or it'll just freeze mid-pose
+  if (batman.flipTimer > 0) batman.flipTimer -= dt;
+  if (robin.active && robin.flipTimer > 0) robin.flipTimer -= dt;
+
+  if (intro && introParkedTimer >= INTRO_POST_PARK_DURATION) {
     intro = false;
     gameRunning = true;
   }
@@ -1423,6 +1460,22 @@ function drawGround() {
       ctx.fillRect(x + 2, gy, w.w - 4, 3);
     }
   }
+}
+
+function drawIntroGoon() {
+  const x = introGoon.x - cameraX;
+  if (x < -40 || x > W + 40) return;
+  if (!introGoon.hit) {
+    drawHenchman(introGoon);
+    return;
+  }
+  const cx = x + introGoon.w / 2, cy = introGoon.y + introGoon.h / 2;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(introGoon.rot);
+  ctx.translate(-cx, -cy);
+  drawHenchman(introGoon);
+  ctx.restore();
 }
 
 function drawBatmobile() {
@@ -2119,6 +2172,7 @@ function render() {
   drawBeacon();
   if (gordonVisible) drawGordon();
   drawBatmobile();
+  if (intro) drawIntroGoon();
   drawEnemies();
   drawJokerBoss();
   drawBane();
@@ -2165,6 +2219,7 @@ function serializeState() {
     cameraX, elapsed, gameWon, gameRunning, beaconActive, ending, endTimer,
     lives, villainsDefeated,
     intro, batmobileX: batmobile.x, introBatmanRevealed, introRobinRevealed,
+    introGoon: { x: introGoon.x, y: introGoon.y, rot: introGoon.rot, hit: introGoon.hit, facing: introGoon.facing },
     batman: charSnapshot(batman),
     robin: robin.active ? charSnapshot(robin) : null,
     enemies: enemies.map(enemySnapshot),
@@ -2196,6 +2251,7 @@ function applyState(s) {
   batmobile.x = s.batmobileX;
   introBatmanRevealed = s.introBatmanRevealed;
   introRobinRevealed = s.introRobinRevealed;
+  Object.assign(introGoon, s.introGoon);
 
   Object.assign(batman, s.batman);
   if (s.robin) {
@@ -2323,6 +2379,7 @@ function winGame() {
 
 function resetCharacter(ch, x, y) {
   ch.x = x; ch.y = y; ch.vx = 0; ch.vy = 0;
+  ch.state = "idle"; ch.animTimer = 0; ch.facing = 1;
   ch.jumpsUsed = 0; ch.flipTimer = 0; ch.landTimer = 0;
   ch.throwTimer = 0; ch.throwCooldown = 0; ch.wasOnGround = false;
   ch.punchTimer = 0; ch.punchCooldown = 0; ch.punchHits = new Set();
@@ -2346,9 +2403,17 @@ function startGame() {
   cameraX = 0;
   intro = true;
   introTimer = 0;
+  introParkedTimer = -1;
   introBatmanRevealed = false;
   introRobinRevealed = false;
-  batmobile.x = -140;
+  batmobile.x = -160;
+  introGoon.x = introGoon.startX;
+  introGoon.y = introGoon.startY;
+  introGoon.facing = -1;
+  introGoon.hit = false;
+  introGoon.vx = 0;
+  introGoon.vy = 0;
+  introGoon.rot = 0;
   gordon.x = beaconCameraX - 15;
   gordon.state = "stand";
   gordon.animTimer = 0;
