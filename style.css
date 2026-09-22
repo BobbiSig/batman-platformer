@@ -106,6 +106,22 @@ canvas#game {
 
 #startBtn.hidden { display: none; }
 
+#muteBtn {
+  position: absolute;
+  top: 34px;
+  right: 10px;
+  font-family: inherit;
+  font-size: 9px;
+  letter-spacing: 1px;
+  color: #cfd2e0;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid #4a4f6a;
+  padding: 3px 6px;
+  cursor: pointer;
+  pointer-events: auto;
+}
+#muteBtn:hover { color: #fff; border-color: #7ee0a8; }
+
 #hint {
   position: absolute;
   bottom: 10px;

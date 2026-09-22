@@ -100,8 +100,9 @@ const platforms = [
   { x: 2560, y: 170, w: 50, h: 12 },   // F3
   { x: 2670, y: 195, w: 50, h: 12 },   // F4
   { x: 2790, y: 190, w: 220, h: 60 },  // P6b — landing zone after the gauntlet
-  { x: 3080, y: 190, w: 260, h: 60 },  // P7 — the Joker's arena
-  { x: 3410, y: 190, w: 300, h: 60 },  // P8 — Bane's arena, beacon at the far end
+  { x: 3010, y: 190, w: 480, h: 60, icy: true }, // IC1 — Mr. Freeze's ice cave
+  { x: 3560, y: 190, w: 260, h: 60 },  // P7 — the Joker's arena
+  { x: 3890, y: 190, w: 300, h: 60 },  // P8 — Bane's arena, beacon at the far end
 ];
 
 // two facing walls: jump into the gap, slide, and wall-jump between them to climb up
@@ -130,7 +131,26 @@ const windZones = [
 
 const allSolids = platforms.concat(floaters).concat(walls);
 
-const levelWidth = 3710 + 60;
+const levelWidth = 4190 + 60;
+
+// ---------------------------------------------------------------------------
+// Mr. Freeze's ice cave — a slippery ground section that thaws for good once
+// the valve is opened
+// ---------------------------------------------------------------------------
+const ICE_ACCEL = 220; // px/s^2 — slow to build up speed on ice
+const ICE_DECEL = 90;  // px/s^2 — slow to stop, so releasing input slides you
+const valve = { x: 3300, y: 174, w: 12, h: 16 };
+const VALVE_INTERACT_RADIUS = 26;
+let iceThawed = false;
+let valveTurnTimer = 0;
+
+// the frozen henchman Mr. Freeze left behind, thawing out alongside the ground
+const freezeStatue = { x: 3420, y: 148, w: 30, h: 42 };
+
+// a gate at the cave's entrance that tallies which way you cross it
+const ecoCounter = { x: 3010, y: 130, w: 4, h: 60 };
+let ecoIn = 0;
+let ecoOut = 0;
 
 const enemies = [
   {
@@ -160,7 +180,7 @@ const enemies = [
 ];
 const ENEMY_SPEED = 40;
 
-const beacon = { x: 3660, y: 130, w: 20, h: 60 };
+const beacon = { x: 4140, y: 130, w: 20, h: 60 };
 let beaconActive = false;
 
 // ---------------------------------------------------------------------------
@@ -186,8 +206,8 @@ const JOKER_BOSS_GAS_SPEED = 160;
 const STUN_DURATION = 1.8; // s a laughing-gas hit locks out all input
 
 const jokerBoss = {
-  x: 3200, y: 164, w: 20, h: 26, startX: 3200,
-  minX: 3100, maxX: 3320, dir: 1, startDir: 1, facing: 1,
+  x: 3680, y: 164, w: 20, h: 26, startX: 3680,
+  minX: 3580, maxX: 3800, dir: 1, startDir: 1, facing: 1,
   alive: true, hp: JOKER_BOSS_MAX_HP, maxHp: JOKER_BOSS_MAX_HP,
   mode: "patrol", // patrol, telegraph, volley, slam, recover
   pendingAction: null,
@@ -221,8 +241,8 @@ const SHOCKWAVE_HEIGHT = 22;    // hitbox height — jump clears it since it onl
 const SHOCKWAVE_DAMAGE = 18;
 
 const bane = {
-  x: 3500, y: 152, w: 28, h: 38, startX: 3500,
-  minX: 3430, maxX: 3620, dir: 1, startDir: 1, facing: 1,
+  x: 3980, y: 152, w: 28, h: 38, startX: 3980,
+  minX: 3910, maxX: 4100, dir: 1, startDir: 1, facing: 1,
   alive: true, hp: BANE_MAX_HP, maxHp: BANE_MAX_HP,
   mode: "patrol", // patrol, telegraph, charging, recover
   pendingAction: null,
@@ -310,6 +330,7 @@ function makeCharacter(x, y) {
     grappleCooldown: 0,
     grappleBufferTimer: 0,
     stunTimer: 0,
+    onIce: false,
     checkpoint: { x, y },
   };
 }
@@ -371,7 +392,7 @@ document.getElementById("villainTotal").textContent = enemies.length + 2;
 // (attack / batarang / grapple) so both hands stay on the keyboard.
 const keys = {};
 window.addEventListener("keydown", (e) => {
-  if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Space", "KeyA", "KeyS", "KeyD"].includes(e.code)) {
+  if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Space", "KeyA", "KeyS", "KeyD", "KeyW"].includes(e.code)) {
     e.preventDefault();
   }
   keys[e.code] = true;
@@ -386,6 +407,7 @@ let jumpPressedEdge = false;
 let throwPressedEdge = false;
 let punchPressedEdge = false;
 let grapplePressedEdge = false;
+let interactPressedEdge = false;
 window.addEventListener("keydown", (e) => {
   if ((e.code === "Space" || e.code === "ArrowUp") && !e.repeat) {
     jumpPressedEdge = true;
@@ -399,6 +421,9 @@ window.addEventListener("keydown", (e) => {
   if (e.code === "KeyD" && !e.repeat) {
     grapplePressedEdge = true;
   }
+  if (e.code === "KeyW" && !e.repeat) {
+    interactPressedEdge = true;
+  }
 });
 
 // this device's own keypresses always control "its" character locally
@@ -407,12 +432,13 @@ window.addEventListener("keydown", (e) => {
 function sendInputToHost() {
   const payload = {
     left: isLeft(), right: isRight(), jumpHeld: isJumpHeld(),
-    jumpEdge: false, throwEdge: false, punchEdge: false, grappleEdge: false,
+    jumpEdge: false, throwEdge: false, punchEdge: false, grappleEdge: false, interactEdge: false,
   };
   if (jumpPressedEdge) { payload.jumpEdge = true; jumpPressedEdge = false; }
   if (throwPressedEdge) { payload.throwEdge = true; throwPressedEdge = false; }
   if (punchPressedEdge) { payload.punchEdge = true; punchPressedEdge = false; }
   if (grapplePressedEdge) { payload.grappleEdge = true; grapplePressedEdge = false; }
+  if (interactPressedEdge) { payload.interactEdge = true; interactPressedEdge = false; }
   NET.sendInput(payload);
 }
 window.addEventListener("keydown", () => { if (NET.role === "guest") sendInputToHost(); });
@@ -426,12 +452,13 @@ const localInput = {
   consumeThrowEdge: () => { if (throwPressedEdge) { throwPressedEdge = false; return true; } return false; },
   consumePunchEdge: () => { if (punchPressedEdge) { punchPressedEdge = false; return true; } return false; },
   consumeGrappleEdge: () => { if (grapplePressedEdge) { grapplePressedEdge = false; return true; } return false; },
+  consumeInteractEdge: () => { if (interactPressedEdge) { interactPressedEdge = false; return true; } return false; },
 };
 
 // fed by network "input" messages from the guest; only ever read on the host
 const remoteRobinInput = {
   left: false, right: false, jumpHeld: false,
-  jumpEdgeQueued: false, throwEdgeQueued: false, punchEdgeQueued: false, grappleEdgeQueued: false,
+  jumpEdgeQueued: false, throwEdgeQueued: false, punchEdgeQueued: false, grappleEdgeQueued: false, interactEdgeQueued: false,
   isLeft() { return this.left; },
   isRight() { return this.right; },
   isJumpHeld() { return this.jumpHeld; },
@@ -439,6 +466,7 @@ const remoteRobinInput = {
   consumeThrowEdge() { if (this.throwEdgeQueued) { this.throwEdgeQueued = false; return true; } return false; },
   consumePunchEdge() { if (this.punchEdgeQueued) { this.punchEdgeQueued = false; return true; } return false; },
   consumeGrappleEdge() { if (this.grappleEdgeQueued) { this.grappleEdgeQueued = false; return true; } return false; },
+  consumeInteractEdge() { if (this.interactEdgeQueued) { this.interactEdgeQueued = false; return true; } return false; },
 };
 
 // ---------------------------------------------------------------------------
@@ -462,12 +490,14 @@ function resolveCollisions(ch, dt) {
   // vertical
   ch.y += ch.vy * dt;
   ch.onGround = false;
+  ch.onIce = false;
   for (const s of allSolids) {
     if (!overlap(ch, s)) continue;
     if (ch.vy > 0) {
       ch.y = s.y - ch.h;
       ch.vy = 0;
       ch.onGround = true;
+      ch.onIce = !!s.icy && !iceThawed;
       ch.checkpoint = { x: Math.max(20, s.x + 10), y: s.y - ch.h };
     } else if (ch.vy < 0) {
       ch.y = s.y + s.h;
@@ -1112,6 +1142,7 @@ function updateCharacter(ch, input, dt) {
     input.consumeThrowEdge();
     input.consumePunchEdge();
     input.consumeGrappleEdge();
+    input.consumeInteractEdge();
 
     ch.vx *= 0.9;
     ch.vy += GRAVITY * dt;
@@ -1123,6 +1154,8 @@ function updateCharacter(ch, input, dt) {
     if (ch.y > H + 40) respawnCharacter(ch);
     return;
   }
+
+  const prevX = ch.x; // for the eco counter's directional crossing check
 
   // --- grappling hook ---
   if (ch.grappleCooldown > 0) ch.grappleCooldown -= dt;
@@ -1174,6 +1207,19 @@ function updateCharacter(ch, input, dt) {
 
   if (ch.grappling || ch.wallJumpLockTimer > 0 || ch.hitStunTimer > 0) {
     // let the grapple pull / kick-off / knockback velocity carry uninterrupted
+  } else if (ch.onIce) {
+    // slow to speed up, slow to stop — momentum carries past where input let go
+    if (input.isLeft() && !input.isRight()) {
+      ch.vx = Math.max(ch.vx - ICE_ACCEL * dt, -moveSpeed);
+      ch.facing = -1;
+    } else if (input.isRight() && !input.isLeft()) {
+      ch.vx = Math.min(ch.vx + ICE_ACCEL * dt, moveSpeed);
+      ch.facing = 1;
+    } else if (ch.vx > 0) {
+      ch.vx = Math.max(ch.vx - ICE_DECEL * dt, 0);
+    } else if (ch.vx < 0) {
+      ch.vx = Math.min(ch.vx + ICE_DECEL * dt, 0);
+    }
   } else if (input.isLeft() && !input.isRight()) {
     ch.vx = -moveSpeed;
     ch.facing = -1;
@@ -1286,6 +1332,15 @@ function updateCharacter(ch, input, dt) {
     }
   }
 
+  // --- interact (the ice cave's valve) ---
+  if (input.consumeInteractEdge() && !iceThawed) {
+    const cx = ch.x + ch.w / 2, cy = ch.y + ch.h / 2;
+    const vx = valve.x + valve.w / 2, vy = valve.y + valve.h / 2;
+    if (Math.hypot(vx - cx, vy - cy) < VALVE_INTERACT_RADIUS) {
+      thawIce();
+    }
+  }
+
   // --- gravity / glide / wall-slide (grapple pull already set vx/vy above) ---
   const airborne = !ch.onGround;
   let gliding = false, wallSliding = false;
@@ -1354,6 +1409,16 @@ function updateCharacter(ch, input, dt) {
   if (ch.y > H + 40) {
     respawnCharacter(ch);
   }
+
+  // --- eco counter: crossing the ice cave's gate ---
+  if (prevX >= ecoCounter.x && ch.x < ecoCounter.x) ecoIn++;
+  else if (prevX <= ecoCounter.x && ch.x > ecoCounter.x) ecoOut++;
+}
+
+function thawIce() {
+  iceThawed = true;
+  valveTurnTimer = 0.01; // kick off the valve's turning animation
+  spawnDust(valve.x + valve.w / 2, valve.y + valve.h, 14, 120);
 }
 
 function update(dt) {
@@ -1366,6 +1431,7 @@ function update(dt) {
   updateProjectiles(dt);
   updateEnemyProjectiles(dt);
   updateShockwaves(dt);
+  if (valveTurnTimer > 0 && valveTurnTimer < 1) valveTurnTimer += dt;
 
   if (damageFlashTimer > 0) damageFlashTimer -= dt;
 
@@ -1566,6 +1632,27 @@ function drawGround() {
   for (const p of platforms.concat(floaters)) {
     const x = p.x - cameraX;
     if (x + p.w < 0 || x > W) continue;
+    if (p.icy && !iceThawed) {
+      // Mr. Freeze's ice cave — pale, glassy, and dusted with frost
+      ctx.fillStyle = "#274a5e";
+      ctx.fillRect(x, p.y, p.w, p.h);
+      ctx.fillStyle = "#bfe9f2";
+      ctx.fillRect(x, p.y, p.w, 5);
+      ctx.fillStyle = "#8fd0e0";
+      for (let gx = 6; gx < p.w - 6; gx += 22) {
+        ctx.fillRect(x + gx, p.y - 3, 3, 3);
+        ctx.fillRect(x + gx + 8, p.y - 5, 3, 5);
+      }
+      continue;
+    }
+    if (p.icy && iceThawed) {
+      // thawed — dark, wet stone with a puddle sheen along the top edge
+      ctx.fillStyle = "#26313a";
+      ctx.fillRect(x, p.y, p.w, p.h);
+      ctx.fillStyle = "#3d5866";
+      ctx.fillRect(x, p.y, p.w, 3);
+      continue;
+    }
     ctx.fillStyle = "#2c2244";
     ctx.fillRect(x, p.y, p.w, p.h);
     ctx.fillStyle = "#3a2c5a";
@@ -1590,6 +1677,66 @@ function drawGround() {
       ctx.fillRect(x + 2, gy, w.w - 4, 3);
     }
   }
+}
+
+function drawValve() {
+  const x = valve.x - cameraX;
+  if (x < -20 || x > W + 20) return;
+  // pipe stub
+  ctx.fillStyle = "#5a5f66";
+  ctx.fillRect(x + 3, valve.y + 6, 6, valve.h - 6);
+  // wheel — spins briefly once turned
+  const spin = valveTurnTimer > 0 ? valveTurnTimer * 14 : 0;
+  ctx.save();
+  ctx.translate(x + valve.w / 2, valve.y + 4);
+  ctx.rotate(spin);
+  ctx.strokeStyle = iceThawed ? "#e05a3a" : "#8a2620";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(0, 0, 5, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.fillStyle = ctx.strokeStyle;
+  ctx.fillRect(-1, -5, 2, 10);
+  ctx.fillRect(-5, -1, 10, 2);
+  ctx.restore();
+}
+
+function drawFreezeStatue() {
+  const x = freezeStatue.x - cameraX;
+  if (x < -50 || x > W + 50) return;
+  if (iceThawed) return; // frees himself once the cave thaws — just an empty melt puddle
+  // block of ice
+  ctx.globalAlpha = 0.55;
+  ctx.fillStyle = "#bfe9f2";
+  ctx.fillRect(x, freezeStatue.y, freezeStatue.w, freezeStatue.h);
+  ctx.globalAlpha = 1;
+  // the man inside — pale blue suit, dome goggles
+  ctx.fillStyle = "#6f8fa3";
+  ctx.fillRect(x + 9, freezeStatue.y + 14, 12, 22);
+  ctx.fillStyle = "#d7e6ea";
+  ctx.fillRect(x + 10, freezeStatue.y + 6, 10, 9);
+  ctx.fillStyle = "#2a3a44";
+  ctx.fillRect(x + 10, freezeStatue.y + 9, 10, 4);
+  // puddle forming at the base as it thaws
+  ctx.fillStyle = "#3d5866";
+  ctx.fillRect(x - 2, freezeStatue.y + freezeStatue.h - 2, freezeStatue.w + 4, 2);
+}
+
+function drawEcoCounter() {
+  const x = ecoCounter.x - cameraX;
+  if (x < -40 || x > W + 40) return;
+  // gate posts
+  ctx.fillStyle = "#4a4f57";
+  ctx.fillRect(x - 2, ecoCounter.y, 4, ecoCounter.h);
+  // sign board
+  ctx.fillStyle = "#1c1f24";
+  ctx.fillRect(x - 22, ecoCounter.y - 16, 44, 14);
+  ctx.fillStyle = "#5df08a";
+  ctx.font = "6px monospace";
+  ctx.textAlign = "center";
+  ctx.fillText(`IN ${ecoIn}`, x, ecoCounter.y - 9);
+  ctx.fillText(`OUT ${ecoOut}`, x, ecoCounter.y - 3);
+  ctx.textAlign = "left";
 }
 
 function drawIntroGoon() {
@@ -2322,6 +2469,9 @@ function render() {
   drawGround();
   drawGrapplePoints();
   drawWindZones();
+  drawEcoCounter();
+  drawFreezeStatue();
+  drawValve();
   drawBeacon();
   if (gordonVisible) drawGordon();
   drawBatmobile();
@@ -2386,6 +2536,7 @@ function serializeState() {
     gordon: { x: gordon.x, y: gordon.y, state: gordon.state, animTimer: gordon.animTimer },
     gordonVisible,
     jokerBossEngaged, bossEngaged,
+    iceThawed, valveTurnTimer, ecoIn, ecoOut,
     winStatsText: gameWon
       ? `VILLAINS DEFEATED: ${villainsDefeated}/${enemies.length + 2}   TIME: ${elapsed.toFixed(1)}s`
       : "",
@@ -2433,6 +2584,10 @@ function applyState(s) {
   gordonVisible = s.gordonVisible;
   jokerBossEngaged = s.jokerBossEngaged;
   bossEngaged = s.bossEngaged;
+  iceThawed = s.iceThawed;
+  valveTurnTimer = s.valveTurnTimer;
+  ecoIn = s.ecoIn;
+  ecoOut = s.ecoOut;
 
   updateHealthUIFor(batman);
   if (robin.active) updateHealthUIFor(robin);
@@ -2491,6 +2646,7 @@ NET.on("input", (input) => {
   if (input.throwEdge) remoteRobinInput.throwEdgeQueued = true;
   if (input.punchEdge) remoteRobinInput.punchEdgeQueued = true;
   if (input.grappleEdge) remoteRobinInput.grappleEdgeQueued = true;
+  if (input.interactEdge) remoteRobinInput.interactEdgeQueued = true;
 });
 NET.on("state", (s) => {
   if (NET.role === "guest") applyState(s);
@@ -2544,6 +2700,7 @@ function resetCharacter(ch, x, y) {
   ch.hitStunTimer = 0; ch.invulnTimer = 0;
   ch.grappling = false; ch.grappleTarget = null; ch.grappleCooldown = 0; ch.grappleBufferTimer = 0;
   ch.stunTimer = 0;
+  ch.onIce = false;
   ch.health = ch.maxHealth;
   ch.checkpoint = { x, y };
   updateHealthUIFor(ch);
@@ -2635,12 +2792,31 @@ function startGame() {
   enemyProjectiles.length = 0;
   shockwaves.length = 0;
   damageFlashTimer = 0;
+  iceThawed = false;
+  valveTurnTimer = 0;
+  ecoIn = 0;
+  ecoOut = 0;
 
   resetCharacter(batman, 20, 150);
   if (robin.active) resetCharacter(robin, 5, 150);
 }
 
+// background theme — each device plays its own local copy, independent of
+// the host/guest simulation; drop a licensed audio file at assets/audio/theme.mp3
+// (or .ogg) to enable it, playback fails silently if none is present
+const bgMusic = document.getElementById("bgMusic");
+bgMusic.volume = 0.5;
+const muteBtn = document.getElementById("muteBtn");
+let musicMuted = false;
+muteBtn.addEventListener("click", () => {
+  musicMuted = !musicMuted;
+  bgMusic.muted = musicMuted;
+  muteBtn.textContent = musicMuted ? "MUSIC: OFF" : "MUSIC: ON";
+});
+
 document.getElementById("startBtn").addEventListener("click", () => {
+  bgMusic.muted = musicMuted;
+  bgMusic.play().catch(() => {});
   if (NET.role !== "guest") startGame();
 });
 document.getElementById("winRestartBtn").addEventListener("click", () => {

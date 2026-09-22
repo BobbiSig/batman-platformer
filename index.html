@@ -26,7 +26,9 @@
 
     <div id="netStatus"></div>
 
-    <div id="hint">ARROWS = RUN &nbsp; SPACE = JUMP x2 &nbsp; HOLD SPACE = GLIDE &nbsp; A = ATTACK &nbsp; S = BATARANG &nbsp; D = GRAPPLE</div>
+    <button id="muteBtn" type="button">MUSIC: ON</button>
+
+    <div id="hint">ARROWS = RUN &nbsp; SPACE = JUMP x2 &nbsp; HOLD SPACE = GLIDE &nbsp; A = ATTACK &nbsp; S = BATARANG &nbsp; D = GRAPPLE &nbsp; W = INTERACT</div>
 
     <div id="bossBar" class="hidden">
       <div id="bossName">BANE</div>
@@ -38,7 +40,7 @@
     <div id="titleScreen" class="overlay">
       <h1>DARK KNIGHT RUN</h1>
       <p id="titleTagline">Fight through Gotham's rooftops and light the Bat-Signal.</p>
-      <p id="controlsBlock" class="small">&larr; &rarr; &nbsp;to run<br>SPACE &nbsp;to jump &mdash; press again in the air for a <b>double jump</b><br>Hold SPACE in the air to <b>glide</b> &mdash; gusts of wind will only lift you while gliding<br>Jump into a wall to <b>slide</b>, then SPACE to <b>wall-jump</b> off it<br>D &nbsp;to fire your <b>grapple hook</b> at the nearest anchor point<br>A &nbsp;to <b>attack</b> &nbsp;&nbsp; S &nbsp;to throw a <b>batarang</b><br>Henchmen only hurt you by shooting or hitting you &mdash; take them out with attacks and batarangs<br>The Joker holds an arena of his own, and Bane guards the beacon itself</p>
+      <p id="controlsBlock" class="small">&larr; &rarr; &nbsp;to run<br>SPACE &nbsp;to jump &mdash; press again in the air for a <b>double jump</b><br>Hold SPACE in the air to <b>glide</b> &mdash; gusts of wind will only lift you while gliding<br>Jump into a wall to <b>slide</b>, then SPACE to <b>wall-jump</b> off it<br>D &nbsp;to fire your <b>grapple hook</b> at the nearest anchor point<br>A &nbsp;to <b>attack</b> &nbsp;&nbsp; S &nbsp;to throw a <b>batarang</b> &nbsp;&nbsp; W &nbsp;to <b>interact</b><br>Henchmen only hurt you by shooting or hitting you &mdash; take them out with attacks and batarangs<br>Mr. Freeze has left the ground iced over and slippery &mdash; find the valve and press W to thaw it<br>The Joker holds an arena of his own, and Bane guards the beacon itself</p>
       <p id="coopStatus" class="small"></p>
       <button id="startBtn">PRESS START</button>
     </div>
@@ -49,6 +51,10 @@
       <button id="winRestartBtn">PLAY AGAIN</button>
     </div>
   </div>
+  <audio id="bgMusic" loop preload="auto">
+    <source src="assets/audio/theme.mp3" type="audio/mpeg">
+    <source src="assets/audio/theme.ogg" type="audio/ogg">
+  </audio>
   <script src="net.js"></script>
   <script src="game.js"></script>
 </body>
