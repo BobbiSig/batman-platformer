@@ -96,9 +96,20 @@ async def index_handler(request):
     return web.FileResponse(ROOT / "index.html")
 
 
+@web.middleware
+async def no_cache_middleware(request, handler):
+    # this is a small, actively-changing game — always serve the latest files
+    # rather than let browsers hang on to a stale cached copy of game.js
+    response = await handler(request)
+    if not isinstance(response, web.WebSocketResponse):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
+
 def main():
     port = int(os.environ.get("PORT", 8000))  # Render (and other PaaS hosts) assign this
-    app = web.Application()
+    app = web.Application(middlewares=[no_cache_middleware])
     app.router.add_get("/", index_handler)
     app.router.add_get("/ws", ws_handler)
     app.router.add_static("/", ROOT, show_index=False)
