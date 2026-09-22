@@ -68,6 +68,18 @@ const KNOCKBACK_VY = -150;
 const PUNCH_DAMAGE = 1;
 const BATARANG_DAMAGE = 1;
 
+const ENEMY_KNOCKBACK_SPEED = 150; // px/s, initial speed on taking a hit
+const ENEMY_KNOCKBACK_DECAY = 0.86; // per-frame velocity retention (friction)
+const ENEMY_KNOCKBACK_TIME = 0.2;   // s
+
+const GRAPPLE_RANGE = 190;       // px, max distance to auto-target an anchor
+const GRAPPLE_PULL_SPEED = 280;  // px/s while reeling in
+const GRAPPLE_RELEASE_DIST = 10; // px, auto-detach once this close to the anchor
+const GRAPPLE_BOOST_VY = -130;   // px/s upward hop granted on release
+const GRAPPLE_BOOST_VX = 70;     // px/s forward carry granted on release
+const GRAPPLE_COOLDOWN = 0.15;   // s before another grapple can be fired
+const GRAPPLE_BUFFER = 0.15;     // s an early grapple press is remembered while on cooldown
+
 // ---------------------------------------------------------------------------
 // Level data
 // ---------------------------------------------------------------------------
@@ -77,10 +89,11 @@ const platforms = [
   { x: 620, y: 190, w: 200, h: 60 },   // P3
   { x: 850, y: 120, w: 150, h: 14 },   // ledge above the wall-jump shaft
   { x: 1010, y: 190, w: 160, h: 60 },  // P4
-  { x: 1240, y: 190, w: 200, h: 60 },  // P5
-  { x: 1620, y: 205, w: 320, h: 60 },  // P6
-  { x: 2010, y: 190, w: 260, h: 60 },  // P7 — the Joker's arena
-  { x: 2340, y: 190, w: 300, h: 60 },  // P8 — Bane's arena, beacon at the far end
+  { x: 1300, y: 70, w: 200, h: 14 },   // P4b — grapple tower rooftop
+  { x: 1570, y: 190, w: 200, h: 60 },  // P5
+  { x: 1950, y: 205, w: 320, h: 60 },  // P6
+  { x: 2340, y: 190, w: 260, h: 60 },  // P7 — the Joker's arena
+  { x: 2670, y: 190, w: 300, h: 60 },  // P8 — Bane's arena, beacon at the far end
 ];
 
 // two facing walls: jump into the gap, slide, and wall-jump between them to climb up
@@ -92,36 +105,42 @@ const walls = [
 // small floating decorative platforms
 const floaters = [
   { x: 400, y: 128, w: 60, h: 12 },
-  { x: 1300, y: 120, w: 60, h: 12 },
+  { x: 1630, y: 120, w: 60, h: 12 },
+];
+
+// grapple anchor: no ground below P4 up to P4b, too tall to jump/glide/wall-jump alone —
+// hook up here first (it also refreshes your double jump), then glide the rest of the way
+const grapplePoints = [
+  { x: 1220, y: 60 },
 ];
 
 const allSolids = platforms.concat(floaters).concat(walls);
 
-const levelWidth = 2640 + 60;
+const levelWidth = 2970 + 60;
 
 const enemies = [
   {
     type: "joker", x: 400, y: 170, w: 15, h: 20, startX: 400,
     minX: 350, maxX: 520, dir: 1, startDir: 1, facing: 1, alive: true,
     attackTimer: 1.2, telegraphTimer: 0, pendingAttack: false,
-    hp: 2, maxHp: 2,
+    hp: 2, maxHp: 2, knockbackVx: 0, knockbackTimer: 0,
   },
   {
     type: "joker", x: 1060, y: 170, w: 15, h: 20, startX: 1060,
     minX: 1030, maxX: 1150, dir: -1, startDir: -1, facing: -1, alive: true,
     attackTimer: 1.8, telegraphTimer: 0, pendingAttack: false,
-    hp: 2, maxHp: 2,
+    hp: 2, maxHp: 2, knockbackVx: 0, knockbackTimer: 0,
   },
   {
-    type: "twoface", x: 1690, y: 181, w: 18, h: 24, startX: 1690,
-    minX: 1650, maxX: 1900, dir: 1, startDir: 1, facing: 1, alive: true,
+    type: "twoface", x: 2020, y: 181, w: 18, h: 24, startX: 2020,
+    minX: 1980, maxX: 2230, dir: 1, startDir: 1, facing: 1, alive: true,
     attackTimer: 2.2, telegraphTimer: 0, pendingAttack: false,
-    hp: 3, maxHp: 3,
+    hp: 3, maxHp: 3, knockbackVx: 0, knockbackTimer: 0,
   },
 ];
 const ENEMY_SPEED = 40;
 
-const beacon = { x: 2590, y: 130, w: 20, h: 60 };
+const beacon = { x: 2920, y: 130, w: 20, h: 60 };
 let beaconActive = false;
 
 // ---------------------------------------------------------------------------
@@ -144,14 +163,15 @@ const JOKER_BOSS_SLAM_ACTIVE = 0.15;
 const JOKER_BOSS_ENGAGE_RANGE = 240;
 
 const jokerBoss = {
-  x: 2130, y: 164, w: 20, h: 26, startX: 2130,
-  minX: 2030, maxX: 2250, dir: 1, startDir: 1, facing: 1,
+  x: 2460, y: 164, w: 20, h: 26, startX: 2460,
+  minX: 2360, maxX: 2580, dir: 1, startDir: 1, facing: 1,
   alive: true, hp: JOKER_BOSS_MAX_HP, maxHp: JOKER_BOSS_MAX_HP,
   mode: "patrol", // patrol, telegraph, volley, slam, recover
   pendingAction: null,
   telegraphTimer: 0, attackTimer: 1.3,
   volleyShotsLeft: 0, volleyTimer: 0,
   slamTimer: 0, recoverTimer: 0,
+  knockbackVx: 0, knockbackTimer: 0,
 };
 let jokerBossEngaged = false;
 
@@ -173,13 +193,14 @@ const BANE_RECOVER_TIME = 0.7;
 const BANE_ENGAGE_RANGE = 260;
 
 const bane = {
-  x: 2430, y: 152, w: 28, h: 38, startX: 2430,
-  minX: 2360, maxX: 2550, dir: 1, startDir: 1, facing: 1,
+  x: 2760, y: 152, w: 28, h: 38, startX: 2760,
+  minX: 2690, maxX: 2880, dir: 1, startDir: 1, facing: 1,
   alive: true, hp: BANE_MAX_HP, maxHp: BANE_MAX_HP,
   mode: "patrol", // patrol, telegraph, charging, recover
   pendingAction: null,
   telegraphTimer: 0, chargeTimer: 0, recoverTimer: 0, attackTimer: 1.5,
   dustTimer: 0,
+  knockbackVx: 0, knockbackTimer: 0,
 };
 let bossEngaged = false;
 
@@ -198,6 +219,19 @@ const gordon = {
 let gordonVisible = false;
 let ending = false;
 let endTimer = 0;
+
+// ---------------------------------------------------------------------------
+// The Batmobile — drives in at the start of the level, heroes hop out of it
+// ---------------------------------------------------------------------------
+const BATMOBILE_SPEED = 135;   // px/s
+const BATMOBILE_DRIVE_TIME = 1.0; // s before it's parked and the first hop-out happens
+const INTRO_DURATION = 2.0;    // s from level start to handing over control
+
+const batmobile = { x: -140, targetX: -15 };
+let intro = false;
+let introTimer = 0;
+let introBatmanRevealed = false;
+let introRobinRevealed = false;
 
 // ---------------------------------------------------------------------------
 // Characters — Batman (always present) and Robin (drops in when a second
@@ -230,6 +264,10 @@ function makeCharacter(x, y) {
     punchTimer: 0,
     punchCooldown: 0,
     runDustTimer: 0,
+    grappling: false,
+    grappleTarget: null,
+    grappleCooldown: 0,
+    grappleBufferTimer: 0,
     checkpoint: { x, y },
   };
 }
@@ -288,7 +326,7 @@ document.getElementById("villainTotal").textContent = enemies.length + 2;
 // ---------------------------------------------------------------------------
 const keys = {};
 window.addEventListener("keydown", (e) => {
-  if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Space", "KeyW", "KeyA", "KeyD", "KeyF", "KeyX", "KeyC"].includes(e.code)) {
+  if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Space", "KeyW", "KeyA", "KeyD", "KeyF", "KeyX", "KeyC", "KeyG"].includes(e.code)) {
     e.preventDefault();
   }
   keys[e.code] = true;
@@ -302,6 +340,7 @@ function isJumpHeld() { return keys["Space"] || keys["ArrowUp"] || keys["KeyW"];
 let jumpPressedEdge = false;
 let throwPressedEdge = false;
 let punchPressedEdge = false;
+let grapplePressedEdge = false;
 window.addEventListener("keydown", (e) => {
   if ((e.code === "Space" || e.code === "ArrowUp" || e.code === "KeyW") && !e.repeat) {
     jumpPressedEdge = true;
@@ -312,6 +351,9 @@ window.addEventListener("keydown", (e) => {
   if (e.code === "KeyC" && !e.repeat) {
     punchPressedEdge = true;
   }
+  if (e.code === "KeyG" && !e.repeat) {
+    grapplePressedEdge = true;
+  }
 });
 
 // this device's own keypresses always control "its" character locally
@@ -320,11 +362,12 @@ window.addEventListener("keydown", (e) => {
 function sendInputToHost() {
   const payload = {
     left: isLeft(), right: isRight(), jumpHeld: isJumpHeld(),
-    jumpEdge: false, throwEdge: false, punchEdge: false,
+    jumpEdge: false, throwEdge: false, punchEdge: false, grappleEdge: false,
   };
   if (jumpPressedEdge) { payload.jumpEdge = true; jumpPressedEdge = false; }
   if (throwPressedEdge) { payload.throwEdge = true; throwPressedEdge = false; }
   if (punchPressedEdge) { payload.punchEdge = true; punchPressedEdge = false; }
+  if (grapplePressedEdge) { payload.grappleEdge = true; grapplePressedEdge = false; }
   NET.sendInput(payload);
 }
 window.addEventListener("keydown", () => { if (NET.role === "guest") sendInputToHost(); });
@@ -337,18 +380,20 @@ const localInput = {
   consumeJumpEdge: () => { if (jumpPressedEdge) { jumpPressedEdge = false; return true; } return false; },
   consumeThrowEdge: () => { if (throwPressedEdge) { throwPressedEdge = false; return true; } return false; },
   consumePunchEdge: () => { if (punchPressedEdge) { punchPressedEdge = false; return true; } return false; },
+  consumeGrappleEdge: () => { if (grapplePressedEdge) { grapplePressedEdge = false; return true; } return false; },
 };
 
 // fed by network "input" messages from the guest; only ever read on the host
 const remoteRobinInput = {
   left: false, right: false, jumpHeld: false,
-  jumpEdgeQueued: false, throwEdgeQueued: false, punchEdgeQueued: false,
+  jumpEdgeQueued: false, throwEdgeQueued: false, punchEdgeQueued: false, grappleEdgeQueued: false,
   isLeft() { return this.left; },
   isRight() { return this.right; },
   isJumpHeld() { return this.jumpHeld; },
   consumeJumpEdge() { if (this.jumpEdgeQueued) { this.jumpEdgeQueued = false; return true; } return false; },
   consumeThrowEdge() { if (this.throwEdgeQueued) { this.throwEdgeQueued = false; return true; } return false; },
   consumePunchEdge() { if (this.punchEdgeQueued) { this.punchEdgeQueued = false; return true; } return false; },
+  consumeGrappleEdge() { if (this.grappleEdgeQueued) { this.grappleEdgeQueued = false; return true; } return false; },
 };
 
 // ---------------------------------------------------------------------------
@@ -493,9 +538,13 @@ function defeatEnemy(en) {
   spawnDust(en.x + en.w / 2, en.y + en.h / 2, 7, 100);
 }
 
-function damageEnemy(en, amount) {
+function damageEnemy(en, amount, knockbackDir) {
   en.hp -= amount;
   spawnDust(en.x + en.w / 2, en.y + en.h / 2, 4, 70);
+  if (knockbackDir) {
+    en.knockbackVx = knockbackDir * ENEMY_KNOCKBACK_SPEED;
+    en.knockbackTimer = ENEMY_KNOCKBACK_TIME;
+  }
   if (en.hp <= 0) defeatEnemy(en);
 }
 
@@ -506,6 +555,7 @@ function throwBatarang(ch) {
     y: ch.y + 8,
     vx: dir * BATARANG_SPEED,
     rot: 0,
+    owner: ch === robin ? "robin" : "batman",
   });
 }
 
@@ -518,14 +568,14 @@ function updateProjectiles(dt) {
 
     let hit = false;
     if (jokerBoss.alive && overlap(box, jokerBoss)) {
-      if (!jokerBossEngaged) { jokerBossEngaged = true; showBossBar("JOKER"); }
-      damageEnemy(jokerBoss, BATARANG_DAMAGE);
+      jokerBossEngaged = true;
+      damageEnemy(jokerBoss, BATARANG_DAMAGE, Math.sign(b.vx));
       if (!jokerBoss.alive) onJokerBossDefeated();
       hit = true;
     }
     if (!hit && bane.alive && overlap(box, bane)) {
-      if (!bossEngaged) { bossEngaged = true; showBossBar("BANE"); }
-      damageEnemy(bane, BATARANG_DAMAGE);
+      bossEngaged = true;
+      damageEnemy(bane, BATARANG_DAMAGE, Math.sign(b.vx));
       if (!bane.alive) onBaneDefeated();
       hit = true;
     }
@@ -533,7 +583,7 @@ function updateProjectiles(dt) {
       if (hit) break;
       if (!en.alive) continue;
       if (overlap(box, en)) {
-        damageEnemy(en, BATARANG_DAMAGE);
+        damageEnemy(en, BATARANG_DAMAGE, Math.sign(b.vx));
         hit = true;
         break;
       }
@@ -556,11 +606,41 @@ function drawProjectiles() {
     ctx.save();
     ctx.translate(x, b.y);
     ctx.rotate(b.rot);
-    ctx.fillStyle = "#d8d9e2";
-    ctx.fillRect(-4, -1, 8, 2);
-    ctx.fillRect(-1, -4, 2, 8);
-    ctx.fillStyle = "#8a8d9c";
-    ctx.fillRect(-1, -1, 2, 2);
+
+    if (b.owner === "robin") {
+      // a small red-and-gold throwing star
+      ctx.fillStyle = "#c0392b";
+      ctx.beginPath();
+      ctx.moveTo(5, 0);
+      ctx.lineTo(1.5, 1.5);
+      ctx.lineTo(0, 5);
+      ctx.lineTo(-1.5, 1.5);
+      ctx.lineTo(-5, 0);
+      ctx.lineTo(-1.5, -1.5);
+      ctx.lineTo(0, -5);
+      ctx.lineTo(1.5, -1.5);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = "#f2c94c";
+      ctx.fillRect(-1, -1, 2, 2);
+    } else {
+      // a proper bat-winged batarang, notched like the bat-signal emblem
+      ctx.fillStyle = "#1c1c22";
+      ctx.beginPath();
+      ctx.moveTo(0, -1.5);
+      ctx.lineTo(-5, -3.5);
+      ctx.lineTo(-3, 0);
+      ctx.lineTo(-5, 3.5);
+      ctx.lineTo(0, 1.5);
+      ctx.lineTo(5, 3.5);
+      ctx.lineTo(3, 0);
+      ctx.lineTo(5, -3.5);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = "#5b6784";
+      ctx.fillRect(-1, -1, 2, 2);
+    }
+
     ctx.restore();
   }
 }
@@ -662,15 +742,21 @@ function fireBaneDebris() {
   });
 }
 
-// generic boss-bar UI, shared by whichever boss is currently engaged
-function updateBossBarFor(boss) {
-  const pct = Math.max(boss.hp, 0) / boss.maxHp * 100;
-  document.getElementById("bossBarFill").style.width = pct + "%";
-}
+// generic boss-bar UI, shared by whichever boss is currently engaged.
+// Bane takes precedence over the Joker if somehow both are "engaged" at once
+// (e.g. the player skipped the Joker without defeating him) since Bane is
+// always the more advanced encounter.
+function refreshBossBar() {
+  let boss = null, name = "";
+  if (bossEngaged && bane.alive) { boss = bane; name = "BANE"; }
+  else if (jokerBossEngaged && jokerBoss.alive) { boss = jokerBoss; name = "JOKER"; }
 
-function showBossBar(name) {
+  const bar = document.getElementById("bossBar");
+  if (!boss) { bar.classList.add("hidden"); return; }
+
   document.getElementById("bossName").textContent = name;
-  document.getElementById("bossBar").classList.remove("hidden");
+  document.getElementById("bossBarFill").style.width = (Math.max(boss.hp, 0) / boss.maxHp) * 100 + "%";
+  bar.classList.remove("hidden");
 }
 
 function hideBossBarSoon() {
@@ -681,12 +767,12 @@ function hideBossBarSoon() {
 }
 
 function onBaneDefeated() {
-  updateBossBarFor(bane);
+  refreshBossBar();
   hideBossBarSoon();
 }
 
 function onJokerBossDefeated() {
-  updateBossBarFor(jokerBoss);
+  refreshBossBar();
   hideBossBarSoon();
 }
 
@@ -704,6 +790,12 @@ function fireJokerCard(en) {
 
 function updateJokerBoss(dt) {
   if (!jokerBoss.alive) return;
+
+  if (jokerBoss.knockbackTimer > 0) {
+    jokerBoss.knockbackTimer -= dt;
+    jokerBoss.x += jokerBoss.knockbackVx * dt;
+    jokerBoss.knockbackVx *= ENEMY_KNOCKBACK_DECAY;
+  }
 
   if (jokerBoss.mode === "patrol") {
     jokerBoss.x += jokerBoss.dir * JOKER_BOSS_SPEED * dt;
@@ -780,13 +872,17 @@ function updateJokerBoss(dt) {
 
   if (!jokerBossEngaged && Math.abs(nearestCharacter(jokerBoss.x).x - jokerBoss.x) < JOKER_BOSS_ENGAGE_RANGE) {
     jokerBossEngaged = true;
-    showBossBar("JOKER");
   }
-  updateBossBarFor(jokerBoss);
 }
 
 function updateBane(dt) {
   if (!bane.alive) return;
+
+  if (bane.knockbackTimer > 0) {
+    bane.knockbackTimer -= dt;
+    bane.x += bane.knockbackVx * dt;
+    bane.knockbackVx *= ENEMY_KNOCKBACK_DECAY;
+  }
 
   if (bane.mode === "patrol") {
     bane.x += bane.dir * BANE_SPEED * dt;
@@ -860,23 +956,63 @@ function updateBane(dt) {
 
   if (!bossEngaged && Math.abs(nearestCharacter(bane.x).x - bane.x) < BANE_ENGAGE_RANGE) {
     bossEngaged = true;
-    showBossBar("BANE");
   }
-  updateBossBarFor(bane);
 }
 
 // ---------------------------------------------------------------------------
 // Update
 // ---------------------------------------------------------------------------
 function updateCharacter(ch, input, dt) {
+  // --- grappling hook ---
+  if (ch.grappleCooldown > 0) ch.grappleCooldown -= dt;
+
+  if (input.consumeGrappleEdge()) {
+    ch.grappleBufferTimer = GRAPPLE_BUFFER;
+  } else {
+    ch.grappleBufferTimer -= dt;
+  }
+
+  if (ch.grappling) {
+    const cx = ch.x + ch.w / 2, cy = ch.y + ch.h / 2;
+    const gx = ch.grappleTarget.x - cx, gy = ch.grappleTarget.y - cy;
+    const dist = Math.hypot(gx, gy);
+    if (dist < GRAPPLE_RELEASE_DIST) {
+      ch.grappling = false;
+      ch.vy = GRAPPLE_BOOST_VY;
+      ch.vx = ch.facing * GRAPPLE_BOOST_VX;
+      ch.grappleCooldown = GRAPPLE_COOLDOWN;
+      ch.wallJumpLockTimer = 0.15; // reuse the same "let this velocity carry" window as a wall-jump kick
+      ch.onGround = false;
+      ch.jumpsUsed = 0; // a hook release always leaves you with a fresh double jump as a safety net
+    } else {
+      ch.vx = (gx / dist) * GRAPPLE_PULL_SPEED;
+      ch.vy = (gy / dist) * GRAPPLE_PULL_SPEED;
+      ch.facing = gx >= 0 ? 1 : -1;
+    }
+  } else if (ch.grappleBufferTimer > 0 && ch.grappleCooldown <= 0) {
+    const cx = ch.x + ch.w / 2, cy = ch.y + ch.h / 2;
+    let best = null, bestDist = GRAPPLE_RANGE;
+    for (const gp of grapplePoints) {
+      const d = Math.hypot(gp.x - cx, gp.y - cy);
+      if (d < bestDist) { best = gp; bestDist = d; }
+    }
+    if (best) {
+      ch.grappling = true;
+      ch.grappleTarget = best;
+      ch.onGround = false;
+      ch.jumpsUsed = 0; // grabbing on refreshes your air options too
+      ch.grappleBufferTimer = 0;
+    }
+  }
+
   // --- horizontal input (locked briefly after a wall jump or a hit so the kick/knockback carries) ---
   const moveSpeed = ch.state === "glide" ? GLIDE_MOVE_SPEED : MOVE_SPEED;
   if (ch.wallJumpLockTimer > 0) ch.wallJumpLockTimer -= dt;
   if (ch.hitStunTimer > 0) ch.hitStunTimer -= dt;
   if (ch.invulnTimer > 0) ch.invulnTimer -= dt;
 
-  if (ch.wallJumpLockTimer > 0 || ch.hitStunTimer > 0) {
-    // let the kick-off / knockback velocity carry uninterrupted
+  if (ch.grappling || ch.wallJumpLockTimer > 0 || ch.hitStunTimer > 0) {
+    // let the grapple pull / kick-off / knockback velocity carry uninterrupted
   } else if (input.isLeft() && !input.isRight()) {
     ch.vx = -moveSpeed;
     ch.facing = -1;
@@ -902,7 +1038,7 @@ function updateCharacter(ch, input, dt) {
     ch.jumpBufferTimer -= dt;
   }
 
-  if (ch.jumpBufferTimer > 0) {
+  if (ch.jumpBufferTimer > 0 && !ch.grappling) {
     if (!ch.onGround && (ch.onWallLeft || ch.onWallRight)) {
       // wall jump — kick off away from whichever wall we're touching
       const pushDir = ch.onWallLeft ? 1 : -1;
@@ -938,7 +1074,7 @@ function updateCharacter(ch, input, dt) {
   if (ch.throwCooldown > 0) ch.throwCooldown -= dt;
   if (ch.throwTimer > 0) ch.throwTimer -= dt;
   if (input.consumeThrowEdge()) {
-    if (ch.throwCooldown <= 0) {
+    if (ch.throwCooldown <= 0 && !ch.grappling) {
       throwBatarang(ch);
       ch.throwCooldown = THROW_COOLDOWN;
       ch.throwTimer = THROW_ANIM_TIME;
@@ -957,25 +1093,25 @@ function updateCharacter(ch, input, dt) {
     };
     for (const en of enemies) {
       if (en.alive && !ch.punchHits.has(en) && overlap(hitbox, en)) {
-        damageEnemy(en, PUNCH_DAMAGE);
+        damageEnemy(en, PUNCH_DAMAGE, ch.facing);
         ch.punchHits.add(en);
       }
     }
     if (jokerBoss.alive && !ch.punchHits.has(jokerBoss) && overlap(hitbox, jokerBoss)) {
-      if (!jokerBossEngaged) { jokerBossEngaged = true; showBossBar("JOKER"); }
-      damageEnemy(jokerBoss, PUNCH_DAMAGE);
+      jokerBossEngaged = true;
+      damageEnemy(jokerBoss, PUNCH_DAMAGE, ch.facing);
       ch.punchHits.add(jokerBoss);
       if (!jokerBoss.alive) onJokerBossDefeated();
     }
     if (bane.alive && !ch.punchHits.has(bane) && overlap(hitbox, bane)) {
-      if (!bossEngaged) { bossEngaged = true; showBossBar("BANE"); }
-      damageEnemy(bane, PUNCH_DAMAGE);
+      bossEngaged = true;
+      damageEnemy(bane, PUNCH_DAMAGE, ch.facing);
       ch.punchHits.add(bane);
       if (!bane.alive) onBaneDefeated();
     }
   }
   if (input.consumePunchEdge()) {
-    if (ch.punchCooldown <= 0) {
+    if (ch.punchCooldown <= 0 && !ch.grappling) {
       ch.punchTimer = PUNCH_ACTIVE;
       ch.punchCooldown = PUNCH_COOLDOWN;
       ch.punchHits = new Set();
@@ -983,21 +1119,24 @@ function updateCharacter(ch, input, dt) {
     }
   }
 
-  // --- gravity / glide / wall-slide ---
+  // --- gravity / glide / wall-slide (grapple pull already set vx/vy above) ---
   const airborne = !ch.onGround;
-  const gliding = airborne && input.isJumpHeld() && ch.vy > -50;
-  const wallSliding = airborne && !gliding && ch.vy > 0 &&
-    ((ch.onWallLeft && input.isLeft()) || (ch.onWallRight && input.isRight()));
+  let gliding = false, wallSliding = false;
+  if (!ch.grappling) {
+    gliding = airborne && input.isJumpHeld() && ch.vy > -50;
+    wallSliding = airborne && !gliding && ch.vy > 0 &&
+      ((ch.onWallLeft && input.isLeft()) || (ch.onWallRight && input.isRight()));
 
-  if (gliding) {
-    ch.vy += GLIDE_GRAVITY * dt;
-    if (ch.vy > GLIDE_MAX_FALL) ch.vy = GLIDE_MAX_FALL;
-  } else if (wallSliding) {
-    ch.vy += WALL_SLIDE_GRAVITY * dt;
-    if (ch.vy > WALL_SLIDE_MAX) ch.vy = WALL_SLIDE_MAX;
-  } else {
-    ch.vy += GRAVITY * dt;
-    if (ch.vy > MAX_FALL) ch.vy = MAX_FALL;
+    if (gliding) {
+      ch.vy += GLIDE_GRAVITY * dt;
+      if (ch.vy > GLIDE_MAX_FALL) ch.vy = GLIDE_MAX_FALL;
+    } else if (wallSliding) {
+      ch.vy += WALL_SLIDE_GRAVITY * dt;
+      if (ch.vy > WALL_SLIDE_MAX) ch.vy = WALL_SLIDE_MAX;
+    } else {
+      ch.vy += GRAVITY * dt;
+      if (ch.vy > MAX_FALL) ch.vy = MAX_FALL;
+    }
   }
 
   // --- collide & move ---
@@ -1019,7 +1158,9 @@ function updateCharacter(ch, input, dt) {
 
   // --- state for animation ---
   ch.animTimer += dt;
-  if (!ch.onGround) {
+  if (ch.grappling) {
+    ch.state = "grapple";
+  } else if (!ch.onGround) {
     ch.state = gliding ? "glide" : wallSliding ? "wallslide" : (ch.vy < 0 ? "jump" : "fall");
   } else {
     ch.state = ch.vx !== 0 ? "run" : "idle";
@@ -1055,6 +1196,12 @@ function update(dt) {
   // --- enemies: patrol, ranged attacks, contact damage ---
   for (const en of enemies) {
     if (!en.alive) continue;
+
+    if (en.knockbackTimer > 0) {
+      en.knockbackTimer -= dt;
+      en.x += en.knockbackVx * dt;
+      en.knockbackVx *= ENEMY_KNOCKBACK_DECAY;
+    }
 
     if (en.telegraphTimer <= 0) {
       en.x += en.dir * ENEMY_SPEED * dt;
@@ -1092,6 +1239,7 @@ function update(dt) {
 
   updateJokerBoss(dt);
   updateBane(dt);
+  refreshBossBar();
 
   // --- bat-signal beacon / win (locked until Bane is defeated) ---
   const touchingBeacon = overlap(batman, beacon) || (robin.active && overlap(robin, beacon));
@@ -1139,6 +1287,33 @@ function updateEnding(dt) {
   if (ending && endTimer > END_SEQUENCE_DURATION) {
     ending = false;
     winGame();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Intro sequence — the Batmobile drives in, heroes hop out, then control
+// ---------------------------------------------------------------------------
+function updateIntro(dt) {
+  introTimer += dt;
+
+  if (batmobile.x < batmobile.targetX) {
+    batmobile.x = Math.min(batmobile.x + BATMOBILE_SPEED * dt, batmobile.targetX);
+  }
+
+  if (!introBatmanRevealed && introTimer > BATMOBILE_DRIVE_TIME) {
+    introBatmanRevealed = true;
+    batman.landTimer = LAND_SQUASH_TIME;
+    spawnDust(batman.x + batman.w / 2, batman.y + batman.h, 5, 70);
+  }
+  if (robin.active && !introRobinRevealed && introTimer > BATMOBILE_DRIVE_TIME + 0.25) {
+    introRobinRevealed = true;
+    robin.landTimer = LAND_SQUASH_TIME;
+    spawnDust(robin.x + robin.w / 2, robin.y + robin.h, 5, 70);
+  }
+
+  if (intro && introTimer > INTRO_DURATION) {
+    intro = false;
+    gameRunning = true;
   }
 }
 
@@ -1215,6 +1390,88 @@ function drawGround() {
       ctx.fillRect(x + 2, gy, w.w - 4, 3);
     }
   }
+}
+
+function drawBatmobile() {
+  const x = batmobile.x - cameraX;
+  if (x < -80 || x > W + 80) return;
+
+  // wheels
+  ctx.fillStyle = "#111318";
+  ctx.beginPath(); ctx.arc(x + 8, 184, 6, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 46, 184, 6, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "#3a2c1a";
+  ctx.beginPath(); ctx.arc(x + 8, 184, 2, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 46, 184, 2, 0, Math.PI * 2); ctx.fill();
+
+  // low sleek body
+  ctx.fillStyle = "#1c1c22";
+  ctx.beginPath();
+  ctx.moveTo(x, 190);
+  ctx.lineTo(x + 4, 178);
+  ctx.lineTo(x + 16, 172);
+  ctx.lineTo(x + 34, 172);
+  ctx.lineTo(x + 44, 178);
+  ctx.lineTo(x + 56, 182);
+  ctx.lineTo(x + 56, 190);
+  ctx.closePath();
+  ctx.fill();
+
+  // canopy
+  ctx.fillStyle = "#2f3654";
+  ctx.beginPath();
+  ctx.moveTo(x + 16, 178);
+  ctx.lineTo(x + 22, 173);
+  ctx.lineTo(x + 32, 173);
+  ctx.lineTo(x + 36, 178);
+  ctx.closePath();
+  ctx.fill();
+
+  // bat-fin tail
+  ctx.fillStyle = "#1c1c22";
+  ctx.beginPath();
+  ctx.moveTo(x + 44, 178);
+  ctx.lineTo(x + 55, 167);
+  ctx.lineTo(x + 50, 180);
+  ctx.closePath();
+  ctx.fill();
+
+  // headlight
+  ctx.fillStyle = "#fff3b0";
+  ctx.fillRect(x - 1, 184, 2, 2);
+}
+
+function drawGrapplePoints() {
+  for (const gp of grapplePoints) {
+    const x = gp.x - cameraX;
+    if (x < -10 || x > W + 10) continue;
+    const glint = 0.5 + Math.sin(elapsed * 3 + gp.x) * 0.5;
+    ctx.fillStyle = "#2a2a33";
+    ctx.beginPath();
+    ctx.arc(x, gp.y, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.save();
+    ctx.globalAlpha = 0.5 + glint * 0.5;
+    ctx.fillStyle = "#f2c94c";
+    ctx.beginPath();
+    ctx.arc(x, gp.y, 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawGrappleLine(ch) {
+  if (!ch.grappling || !ch.grappleTarget) return;
+  const x1 = ch.x + ch.w / 2 - cameraX, y1 = ch.y + ch.h / 2;
+  const x2 = ch.grappleTarget.x - cameraX, y2 = ch.grappleTarget.y;
+  ctx.strokeStyle = "#c9cbd8";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+  ctx.fillStyle = "#8a8d9c";
+  ctx.fillRect(x2 - 2, y2 - 2, 4, 4);
 }
 
 // the classic bat emblem: pointed ears, swept wings, scalloped wingtips
@@ -1666,7 +1923,9 @@ function drawCharacter(ch, palette) {
   }
 
   // ---- cape (behind body) ----
-  if (ch.state === "glide") {
+  if (ch.state === "grapple") {
+    capePath([[6, 2], [-9, 3], [-7, 9], [-3, 7], [3, 12]]);
+  } else if (ch.state === "glide") {
     capePath([[6, 3], [-14, 2 + flap], [-10, 9], [-19, 10 + flap], [-9, 15], [2, 12]]);
   } else if (ch.state === "wallslide") {
     capePath([[5, 2], [-4, 6], [-2, 15], [4, 12]]);
@@ -1684,6 +1943,9 @@ function drawCharacter(ch, palette) {
   if (ch.state === "run") {
     runLeg(3, runPhase);
     runLeg(8, runPhase + Math.PI);
+  } else if (ch.state === "grapple") {
+    ctx.fillRect(2, 14, 4, 5);
+    ctx.fillRect(9, 15, 4, 5);
   } else if (ch.state === "jump") {
     ctx.fillRect(3, 13, 4, 5);
     ctx.fillRect(8, 14, 4, 5);
@@ -1722,6 +1984,10 @@ function drawCharacter(ch, palette) {
     ctx.fillRect(19, 9, 1, 1);
   } else if (ch.throwTimer > 0) {
     ctx.fillRect(10, 6, 8, 3);
+    ctx.fillRect(1, 9, 3, 5);
+  } else if (ch.state === "grapple") {
+    // leading arm stretched taut toward the hook line
+    ctx.fillRect(10, 4, 9, 3);
     ctx.fillRect(1, 9, 3, 5);
   } else if (ch.state === "glide") {
     ctx.fillRect(-4, 5 + flap, 7, 3);
@@ -1788,16 +2054,20 @@ function drawDamageFlash() {
 function render() {
   drawBackground();
   drawGround();
+  drawGrapplePoints();
   drawBeacon();
   if (gordonVisible) drawGordon();
+  drawBatmobile();
   drawEnemies();
   drawJokerBoss();
   drawBane();
   drawEnemyProjectiles();
   drawParticles();
   drawProjectiles();
-  drawCharacter(batman, BATMAN_PALETTE);
-  if (robin.active) drawCharacter(robin, ROBIN_PALETTE);
+  drawGrappleLine(batman);
+  if (robin.active) drawGrappleLine(robin);
+  if (!intro || introBatmanRevealed) drawCharacter(batman, BATMAN_PALETTE);
+  if (robin.active && (!intro || introRobinRevealed)) drawCharacter(robin, ROBIN_PALETTE);
   drawDamageFlash();
 }
 
@@ -1811,6 +2081,7 @@ function charSnapshot(ch) {
     animTimer: ch.animTimer, flipTimer: ch.flipTimer, landTimer: ch.landTimer,
     throwTimer: ch.throwTimer, punchTimer: ch.punchTimer, invulnTimer: ch.invulnTimer,
     health: ch.health, maxHealth: ch.maxHealth,
+    grappling: ch.grappling, grappleTarget: ch.grappleTarget,
   };
 }
 
@@ -1832,12 +2103,13 @@ function serializeState() {
   return {
     cameraX, elapsed, gameWon, gameRunning, beaconActive, ending, endTimer,
     lives, villainsDefeated,
+    intro, batmobileX: batmobile.x, introBatmanRevealed, introRobinRevealed,
     batman: charSnapshot(batman),
     robin: robin.active ? charSnapshot(robin) : null,
     enemies: enemies.map(enemySnapshot),
     jokerBoss: bossSnapshot(jokerBoss),
     bane: bossSnapshot(bane),
-    projectiles: projectiles.map((p) => ({ x: p.x, y: p.y, rot: p.rot })),
+    projectiles: projectiles.map((p) => ({ x: p.x, y: p.y, rot: p.rot, owner: p.owner })),
     enemyProjectiles: enemyProjectiles.map((p) => ({ x: p.x, y: p.y, rot: p.rot, type: p.type })),
     particles: particles.map((p) => ({ x: p.x, y: p.y, size: p.size, life: p.life, maxLife: p.maxLife })),
     gordon: { x: gordon.x, y: gordon.y, state: gordon.state, animTimer: gordon.animTimer },
@@ -1859,6 +2131,10 @@ function applyState(s) {
   endTimer = s.endTimer;
   lives = s.lives;
   villainsDefeated = s.villainsDefeated;
+  intro = s.intro;
+  batmobile.x = s.batmobileX;
+  introBatmanRevealed = s.introBatmanRevealed;
+  introRobinRevealed = s.introRobinRevealed;
 
   Object.assign(batman, s.batman);
   if (s.robin) {
@@ -1890,22 +2166,9 @@ function applyState(s) {
   document.getElementById("livesCount").textContent = Math.max(lives, 0);
   document.getElementById("robinHealthBox").classList.toggle("hidden", !robin.active);
 
-  let bossVisible = false, bossName = "", bossHp = 0, bossMaxHp = 1;
-  if (bossEngaged && bane.alive) {
-    bossVisible = true; bossName = "BANE"; bossHp = bane.hp; bossMaxHp = bane.maxHp;
-  } else if (jokerBossEngaged && jokerBoss.alive) {
-    bossVisible = true; bossName = "JOKER"; bossHp = jokerBoss.hp; bossMaxHp = jokerBoss.maxHp;
-  }
-  const bossBarEl = document.getElementById("bossBar");
-  if (bossVisible) {
-    document.getElementById("bossName").textContent = bossName;
-    document.getElementById("bossBarFill").style.width = (Math.max(bossHp, 0) / bossMaxHp) * 100 + "%";
-    bossBarEl.classList.remove("hidden");
-  } else {
-    bossBarEl.classList.add("hidden");
-  }
+  refreshBossBar();
 
-  document.getElementById("titleScreen").classList.toggle("hidden", gameRunning || gameWon);
+  document.getElementById("titleScreen").classList.toggle("hidden", gameRunning || gameWon || intro);
   document.getElementById("winScreen").classList.toggle("hidden", !gameWon);
   if (gameWon) document.getElementById("winStats").textContent = s.winStatsText;
 }
@@ -1953,6 +2216,7 @@ NET.on("input", (input) => {
   if (input.jumpEdge) remoteRobinInput.jumpEdgeQueued = true;
   if (input.throwEdge) remoteRobinInput.throwEdgeQueued = true;
   if (input.punchEdge) remoteRobinInput.punchEdgeQueued = true;
+  if (input.grappleEdge) remoteRobinInput.grappleEdgeQueued = true;
 });
 NET.on("state", (s) => {
   if (NET.role === "guest") applyState(s);
@@ -1969,7 +2233,9 @@ function loop(now) {
   if (NET.role === "guest") {
     // no local physics — the render below just draws whatever the host last sent
   } else {
-    if (gameRunning && !gameWon) {
+    if (intro) {
+      updateIntro(dt);
+    } else if (gameRunning && !gameWon) {
       update(dt);
     } else if (ending) {
       updateEnding(dt);
@@ -2005,11 +2271,17 @@ function startGame() {
   document.getElementById("titleScreen").classList.add("hidden");
   document.getElementById("winScreen").classList.add("hidden");
   gameWon = false;
-  gameRunning = true;
+  gameRunning = false;
   beaconActive = false;
   ending = false;
   endTimer = 0;
   gordonVisible = false;
+  cameraX = 0;
+  intro = true;
+  introTimer = 0;
+  introBatmanRevealed = false;
+  introRobinRevealed = false;
+  batmobile.x = -140;
   gordon.x = beaconCameraX - 15;
   gordon.state = "stand";
   gordon.animTimer = 0;
@@ -2028,6 +2300,8 @@ function startGame() {
     en.attackTimer = 1 + Math.random();
     en.telegraphTimer = 0;
     en.pendingAttack = false;
+    en.knockbackVx = 0;
+    en.knockbackTimer = 0;
   }
 
   jokerBoss.alive = true;
@@ -2043,6 +2317,8 @@ function startGame() {
   jokerBoss.slamTimer = 0;
   jokerBoss.recoverTimer = 0;
   jokerBoss.attackTimer = 1.3 + Math.random();
+  jokerBoss.knockbackVx = 0;
+  jokerBoss.knockbackTimer = 0;
   jokerBossEngaged = false;
 
   bane.alive = true;
@@ -2057,6 +2333,8 @@ function startGame() {
   bane.recoverTimer = 0;
   bane.dustTimer = 0;
   bane.attackTimer = 1.5 + Math.random();
+  bane.knockbackVx = 0;
+  bane.knockbackTimer = 0;
   bossEngaged = false;
 
   document.getElementById("bossBar").classList.add("hidden");
