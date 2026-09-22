@@ -1048,7 +1048,13 @@ function updateCharacter(ch, input, dt) {
     ch.jumpsUsed = 0;
   } else {
     ch.coyoteTimer -= dt;
-    if (ch.onWallLeft || ch.onWallRight) ch.jumpsUsed = 0;
+    if (ch.onWallLeft || ch.onWallRight) {
+      ch.jumpsUsed = 0;
+    } else if (ch.coyoteTimer <= 0 && ch.jumpsUsed === 0) {
+      // missed the coyote window without ever jumping (just walked off an
+      // edge) — that "ground jump" is gone, only the one air jump remains
+      ch.jumpsUsed = 1;
+    }
   }
 
   if (input.consumeJumpEdge()) {
@@ -1910,6 +1916,29 @@ function drawBane() {
   ctx.restore();
 }
 
+// hoisted out of drawCharacter so these aren't recreated as new closures every
+// single frame for every character — cheap individually, but adds up as GC pressure
+function capePath(points, capeColor, edgeColor) {
+  ctx.beginPath();
+  ctx.moveTo(points[0][0], points[0][1]);
+  for (let i = 1; i < points.length; i++) ctx.lineTo(points[i][0], points[i][1]);
+  ctx.closePath();
+  ctx.fillStyle = capeColor;
+  ctx.fill();
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = edgeColor;
+  ctx.stroke();
+}
+
+// one leg of the running gait: swings fore/aft and shortens (knee-bend) as it lifts through recovery
+function runLeg(baseX, phase) {
+  const swing = Math.sin(phase);
+  const xOff = Math.round(swing * 3);
+  const lift = Math.max(0, -swing) * 3;
+  const len = 7 - Math.round(lift);
+  ctx.fillRect(baseX + xOff, 13, 4, len);
+}
+
 function drawCharacter(ch, palette) {
   const x = Math.round(ch.x - cameraX);
   const y = Math.round(ch.y);
@@ -1953,41 +1982,20 @@ function drawCharacter(ch, palette) {
 
   const { K, KD, CAPE, CAPE_EDGE, Y, SK, WH } = palette;
 
-  function capePath(points) {
-    ctx.beginPath();
-    ctx.moveTo(points[0][0], points[0][1]);
-    for (let i = 1; i < points.length; i++) ctx.lineTo(points[i][0], points[i][1]);
-    ctx.closePath();
-    ctx.fillStyle = CAPE;
-    ctx.fill();
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = CAPE_EDGE;
-    ctx.stroke();
-  }
-
-  // one leg of the running gait: swings fore/aft and shortens (knee-bend) as it lifts through recovery
-  function runLeg(baseX, phase) {
-    const swing = Math.sin(phase);
-    const xOff = Math.round(swing * 3);
-    const lift = Math.max(0, -swing) * 3;
-    const len = 7 - Math.round(lift);
-    ctx.fillRect(baseX + xOff, 13, 4, len);
-  }
-
   // ---- cape (behind body) ----
   if (ch.state === "grapple") {
-    capePath([[6, 2], [-9, 3], [-7, 9], [-3, 7], [3, 12]]);
+    capePath([[6, 2], [-9, 3], [-7, 9], [-3, 7], [3, 12]], CAPE, CAPE_EDGE);
   } else if (ch.state === "glide") {
-    capePath([[6, 3], [-14, 2 + flap], [-10, 9], [-19, 10 + flap], [-9, 15], [2, 12]]);
+    capePath([[6, 3], [-14, 2 + flap], [-10, 9], [-19, 10 + flap], [-9, 15], [2, 12]], CAPE, CAPE_EDGE);
   } else if (ch.state === "wallslide") {
-    capePath([[5, 2], [-4, 6], [-2, 15], [4, 12]]);
+    capePath([[5, 2], [-4, 6], [-2, 15], [4, 12]], CAPE, CAPE_EDGE);
   } else if (ch.state === "jump" || ch.state === "fall") {
-    capePath([[6, 2], [-8, 4], [-6, 10], [-2, 8], [3, 12]]);
+    capePath([[6, 2], [-8, 4], [-6, 10], [-2, 8], [3, 12]], CAPE, CAPE_EDGE);
   } else if (ch.state === "run") {
     const sway = Math.round(Math.sin(runPhase) * 4);
-    capePath([[5, 2], [-6 + sway, 6], [-3 + sway, 13], [4, 10]]);
+    capePath([[5, 2], [-6 + sway, 6], [-3 + sway, 13], [4, 10]], CAPE, CAPE_EDGE);
   } else {
-    capePath([[5, 2], [-5, 5], [-3, 14], [4, 11]]);
+    capePath([[5, 2], [-5, 5], [-3, 14], [4, 11]], CAPE, CAPE_EDGE);
   }
 
   // ---- legs ----
@@ -2293,7 +2301,12 @@ function loop(now) {
     } else if (ending) {
       updateEnding(dt);
     }
-    NET.sendState(serializeState()); // no-op unless we're actually hosting a connected guest
+    // building the state snapshot allocates a fair bit (maps over every enemy,
+    // projectile, particle...) so skip it entirely unless a guest is actually
+    // connected to receive it — solo play shouldn't pay that cost every frame
+    if (NET.role === "host" && NET.guestConnected) {
+      NET.sendState(serializeState());
+    }
   }
 
   render();
