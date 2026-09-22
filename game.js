@@ -80,6 +80,9 @@ const GRAPPLE_BOOST_VX = 70;     // px/s forward carry granted on release
 const GRAPPLE_COOLDOWN = 0.15;   // s before another grapple can be fired
 const GRAPPLE_BUFFER = 0.15;     // s an early grapple press is remembered while on cooldown
 
+const WIND_LIFT_ACCEL = 260; // px/s^2 upward push while gliding through a gust
+const WIND_MAX_RISE = 80;    // px/s cap on how fast a gust can carry you upward
+
 // ---------------------------------------------------------------------------
 // Level data
 // ---------------------------------------------------------------------------
@@ -112,6 +115,12 @@ const floaters = [
 // hook up here first (it also refreshes your double jump), then glide the rest of the way
 const grapplePoints = [
   { x: 1220, y: 60 },
+];
+
+// an updraft over the big glide gap — only lifts a character that's actively
+// gliding through it, so it rewards using the ability rather than just falling
+const windZones = [
+  { x: 1770, y: 40, w: 180, h: 180 },
 ];
 
 const allSolids = platforms.concat(floaters).concat(walls);
@@ -324,34 +333,36 @@ document.getElementById("villainTotal").textContent = enemies.length + 2;
 // ---------------------------------------------------------------------------
 // Input
 // ---------------------------------------------------------------------------
+// Arrow keys run, Space jumps; A/S/D are the left-hand action keys
+// (attack / batarang / grapple) so both hands stay on the keyboard.
 const keys = {};
 window.addEventListener("keydown", (e) => {
-  if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Space", "KeyW", "KeyA", "KeyD", "KeyF", "KeyX", "KeyC", "KeyG"].includes(e.code)) {
+  if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Space", "KeyA", "KeyS", "KeyD"].includes(e.code)) {
     e.preventDefault();
   }
   keys[e.code] = true;
 });
 window.addEventListener("keyup", (e) => { keys[e.code] = false; });
 
-function isLeft() { return keys["ArrowLeft"] || keys["KeyA"]; }
-function isRight() { return keys["ArrowRight"] || keys["KeyD"]; }
-function isJumpHeld() { return keys["Space"] || keys["ArrowUp"] || keys["KeyW"]; }
+function isLeft() { return keys["ArrowLeft"]; }
+function isRight() { return keys["ArrowRight"]; }
+function isJumpHeld() { return keys["Space"] || keys["ArrowUp"]; }
 
 let jumpPressedEdge = false;
 let throwPressedEdge = false;
 let punchPressedEdge = false;
 let grapplePressedEdge = false;
 window.addEventListener("keydown", (e) => {
-  if ((e.code === "Space" || e.code === "ArrowUp" || e.code === "KeyW") && !e.repeat) {
+  if ((e.code === "Space" || e.code === "ArrowUp") && !e.repeat) {
     jumpPressedEdge = true;
   }
-  if ((e.code === "KeyF" || e.code === "KeyX") && !e.repeat) {
+  if (e.code === "KeyS" && !e.repeat) {
     throwPressedEdge = true;
   }
-  if (e.code === "KeyC" && !e.repeat) {
+  if (e.code === "KeyA" && !e.repeat) {
     punchPressedEdge = true;
   }
-  if (e.code === "KeyG" && !e.repeat) {
+  if (e.code === "KeyD" && !e.repeat) {
     grapplePressedEdge = true;
   }
 });
@@ -374,9 +385,9 @@ window.addEventListener("keydown", () => { if (NET.role === "guest") sendInputTo
 window.addEventListener("keyup", () => { if (NET.role === "guest") sendInputToHost(); });
 
 const localInput = {
-  isLeft: () => keys["ArrowLeft"] || keys["KeyA"],
-  isRight: () => keys["ArrowRight"] || keys["KeyD"],
-  isJumpHeld: () => keys["Space"] || keys["ArrowUp"] || keys["KeyW"],
+  isLeft: () => keys["ArrowLeft"],
+  isRight: () => keys["ArrowRight"],
+  isJumpHeld: () => keys["Space"] || keys["ArrowUp"],
   consumeJumpEdge: () => { if (jumpPressedEdge) { jumpPressedEdge = false; return true; } return false; },
   consumeThrowEdge: () => { if (throwPressedEdge) { throwPressedEdge = false; return true; } return false; },
   consumePunchEdge: () => { if (punchPressedEdge) { punchPressedEdge = false; return true; } return false; },
@@ -610,37 +621,43 @@ function drawProjectiles() {
     ctx.rotate(b.rot);
 
     if (b.owner === "robin") {
-      // a small red-and-gold throwing star
-      ctx.fillStyle = "#c0392b";
+      // a bright red-and-gold throwing star, outlined for visibility
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = "#2a1010";
+      ctx.fillStyle = "#e0413d";
       ctx.beginPath();
-      ctx.moveTo(5, 0);
-      ctx.lineTo(1.5, 1.5);
-      ctx.lineTo(0, 5);
-      ctx.lineTo(-1.5, 1.5);
-      ctx.lineTo(-5, 0);
-      ctx.lineTo(-1.5, -1.5);
-      ctx.lineTo(0, -5);
-      ctx.lineTo(1.5, -1.5);
+      ctx.moveTo(6, 0);
+      ctx.lineTo(2, 2);
+      ctx.lineTo(0, 6);
+      ctx.lineTo(-2, 2);
+      ctx.lineTo(-6, 0);
+      ctx.lineTo(-2, -2);
+      ctx.lineTo(0, -6);
+      ctx.lineTo(2, -2);
       ctx.closePath();
       ctx.fill();
-      ctx.fillStyle = "#f2c94c";
-      ctx.fillRect(-1, -1, 2, 2);
+      ctx.stroke();
+      ctx.fillStyle = "#ffd23f";
+      ctx.fillRect(-1.5, -1.5, 3, 3);
     } else {
-      // a proper bat-winged batarang, notched like the bat-signal emblem
-      ctx.fillStyle = "#1c1c22";
+      // a bright silver batarang, bat-winged and notched, outlined for visibility
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = "#14151a";
+      ctx.fillStyle = "#eef0f5";
       ctx.beginPath();
-      ctx.moveTo(0, -1.5);
-      ctx.lineTo(-5, -3.5);
-      ctx.lineTo(-3, 0);
-      ctx.lineTo(-5, 3.5);
-      ctx.lineTo(0, 1.5);
-      ctx.lineTo(5, 3.5);
-      ctx.lineTo(3, 0);
-      ctx.lineTo(5, -3.5);
+      ctx.moveTo(0, -2);
+      ctx.lineTo(-7, -5);
+      ctx.lineTo(-4, 0);
+      ctx.lineTo(-7, 5);
+      ctx.lineTo(0, 2);
+      ctx.lineTo(7, 5);
+      ctx.lineTo(4, 0);
+      ctx.lineTo(7, -5);
       ctx.closePath();
       ctx.fill();
-      ctx.fillStyle = "#5b6784";
-      ctx.fillRect(-1, -1, 2, 2);
+      ctx.stroke();
+      ctx.fillStyle = "#8891b8";
+      ctx.fillRect(-1.5, -1.5, 3, 3);
     }
 
     ctx.restore();
@@ -985,7 +1002,7 @@ function updateCharacter(ch, input, dt) {
       ch.grappleCooldown = GRAPPLE_COOLDOWN;
       ch.wallJumpLockTimer = 0.15; // reuse the same "let this velocity carry" window as a wall-jump kick
       ch.onGround = false;
-      ch.jumpsUsed = 0; // a hook release always leaves you with a fresh double jump as a safety net
+      ch.jumpsUsed = 1; // a hook release leaves exactly one extra jump, not a full refill
     } else {
       ch.vx = (gx / dist) * GRAPPLE_PULL_SPEED;
       ch.vy = (gy / dist) * GRAPPLE_PULL_SPEED;
@@ -1002,7 +1019,7 @@ function updateCharacter(ch, input, dt) {
       ch.grappling = true;
       ch.grappleTarget = best;
       ch.onGround = false;
-      ch.jumpsUsed = 0; // grabbing on refreshes your air options too
+      ch.jumpsUsed = 1; // grabbing on still only leaves one extra jump available
       ch.grappleBufferTimer = 0;
     }
   }
@@ -1132,6 +1149,14 @@ function updateCharacter(ch, input, dt) {
     if (gliding) {
       ch.vy += GLIDE_GRAVITY * dt;
       if (ch.vy > GLIDE_MAX_FALL) ch.vy = GLIDE_MAX_FALL;
+      // updrafts only carry a character that's actively gliding through them
+      for (const wz of windZones) {
+        if (overlap(ch, wz)) {
+          ch.vy -= WIND_LIFT_ACCEL * dt;
+          if (ch.vy < -WIND_MAX_RISE) ch.vy = -WIND_MAX_RISE;
+          break;
+        }
+      }
     } else if (wallSliding) {
       ch.vy += WALL_SLIDE_GRAVITY * dt;
       if (ch.vy > WALL_SLIDE_MAX) ch.vy = WALL_SLIDE_MAX;
@@ -1398,16 +1423,16 @@ function drawBatmobile() {
   const x = batmobile.x - cameraX;
   if (x < -80 || x > W + 80) return;
 
-  // wheels
+  // wheels (kept dark — the rubber reads fine against a brighter body)
   ctx.fillStyle = "#111318";
   ctx.beginPath(); ctx.arc(x + 8, 184, 6, 0, Math.PI * 2); ctx.fill();
   ctx.beginPath(); ctx.arc(x + 46, 184, 6, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = "#3a2c1a";
+  ctx.fillStyle = "#5a4a2a";
   ctx.beginPath(); ctx.arc(x + 8, 184, 2, 0, Math.PI * 2); ctx.fill();
   ctx.beginPath(); ctx.arc(x + 46, 184, 2, 0, Math.PI * 2); ctx.fill();
 
-  // low sleek body
-  ctx.fillStyle = "#1c1c22";
+  // low sleek body — brightened slate-blue so it reads clearly against the dark rooftop
+  ctx.fillStyle = "#4a5578";
   ctx.beginPath();
   ctx.moveTo(x, 190);
   ctx.lineTo(x + 4, 178);
@@ -1418,9 +1443,12 @@ function drawBatmobile() {
   ctx.lineTo(x + 56, 190);
   ctx.closePath();
   ctx.fill();
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = "#8891b8";
+  ctx.stroke();
 
   // canopy
-  ctx.fillStyle = "#2f3654";
+  ctx.fillStyle = "#5a7ab0";
   ctx.beginPath();
   ctx.moveTo(x + 16, 178);
   ctx.lineTo(x + 22, 173);
@@ -1430,13 +1458,14 @@ function drawBatmobile() {
   ctx.fill();
 
   // bat-fin tail
-  ctx.fillStyle = "#1c1c22";
+  ctx.fillStyle = "#4a5578";
   ctx.beginPath();
   ctx.moveTo(x + 44, 178);
   ctx.lineTo(x + 55, 167);
   ctx.lineTo(x + 50, 180);
   ctx.closePath();
   ctx.fill();
+  ctx.stroke();
 
   // headlight
   ctx.fillStyle = "#fff3b0";
@@ -1458,6 +1487,27 @@ function drawGrapplePoints() {
     ctx.beginPath();
     ctx.arc(x, gp.y, 2, 0, Math.PI * 2);
     ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawWindZones() {
+  for (const wz of windZones) {
+    const x0 = wz.x - cameraX;
+    if (x0 + wz.w < 0 || x0 > W) continue;
+    ctx.save();
+    ctx.globalAlpha = 0.3;
+    ctx.strokeStyle = "#cfe8ff";
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 8; i++) {
+      const sx = x0 + ((i * 41 + 11) % wz.w);
+      const cycle = (elapsed * 90 + i * 47) % (wz.h + 24);
+      const sy = wz.y + wz.h - cycle;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(sx - 2, sy + 12);
+      ctx.stroke();
+    }
     ctx.restore();
   }
 }
@@ -2057,6 +2107,7 @@ function render() {
   drawBackground();
   drawGround();
   drawGrapplePoints();
+  drawWindZones();
   drawBeacon();
   if (gordonVisible) drawGordon();
   drawBatmobile();
